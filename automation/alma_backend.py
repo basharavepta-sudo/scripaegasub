@@ -88,8 +88,13 @@ def generate_translation_prompt(data: Dict[str, Any], config: Dict[str, Any]) ->
     style = config.get("translation_style", "natural")
     style_desc = STYLE_PRESETS.get(style, STYLE_PRESETS["natural"])
 
-    en_text = current_line.get('en', '') or ''
-    ru_text = current_line.get('ru', '') or ''
+    # Sanitize inputs
+    def sanitize(text):
+        if not text: return ""
+        return str(text).replace("\\N", " [br] ")
+
+    en_text = sanitize(current_line.get('en', '') or '')
+    ru_text = sanitize(current_line.get('ru', '') or '')
     duration = current_line.get('duration', 0)
 
     # Build prompt with localization focus
@@ -111,7 +116,8 @@ def generate_translation_prompt(data: Dict[str, Any], config: Dict[str, Any]) ->
     if context_before:
         ctx = context_before[-1]  # Only last line for speed
         if ctx.get('ru'):
-            lines.append(f"Пред. строка: {ctx['ru']}")
+            ctx_ru = sanitize(ctx['ru'])
+            lines.append(f"Пред. строка: {ctx_ru}")
 
     # Current line
     lines.append(f"\n[АНГЛИЙСКИЙ]: {en_text}")
@@ -119,8 +125,10 @@ def generate_translation_prompt(data: Dict[str, Any], config: Dict[str, Any]) ->
         lines.append(f"[ТЕКУЩИЙ РУССКИЙ]: {ru_text}")
 
     # Instructions
+    lines.append("\nВАЖНО: Ипользуй токен ' [br] ' для переноса строки вместо \\N.")
+
     if default_instructions:
-        lines.append(f"\nУказания: {default_instructions}")
+        lines.append(f"Указания: {default_instructions}")
 
     if feedback:
         lines.append(f"Доп. требования: {feedback}")
@@ -129,7 +137,7 @@ def generate_translation_prompt(data: Dict[str, Any], config: Dict[str, Any]) ->
     lines.append(f"\nДай {num_variants} вариант(а) локализации.")
     lines.append("Формат ответа - ТОЛЬКО варианты, каждый с новой строки:")
     lines.append("1. **вариант перевода**")
-    lines.append("2. **вариант перевода**")
+    lines.append("2. **вариант с [br] переносом**")
     if num_variants >= 3:
         lines.append("3. **вариант перевода**")
 
@@ -286,12 +294,11 @@ def parse_variants(response_text: str, num_variants: int = 3, original_ru: str =
         # Remove any remaining ** markers
         cleaned = cleaned.replace('**', '')
 
-        # Preserve \N line breaks, but clean up other whitespace
-        # Ensure we don't accidentally join lines that are separated by \N
-        # We temporarily replace \N with a placeholder
-        cleaned = cleaned.replace('\\N', '###LINEBREAK###')
+        # Clean whitespace
         cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-        cleaned = cleaned.replace('###LINEBREAK###', '\\N')
+
+        # Restore [br] -> \N
+        cleaned = re.sub(r'\s*\[br\]\s*', r'\\N', cleaned, flags=re.IGNORECASE)
 
         # Must contain Cyrillic and be substantial
         if cleaned and len(cleaned) > 2:
@@ -304,25 +311,27 @@ def parse_variants(response_text: str, num_variants: int = 3, original_ru: str =
         bold_matches = re.findall(r'\*\*([^*]+)\*\*', response_text)
         for match in bold_matches:
             if re.search(r'[а-яА-ЯёЁ]', match):
-                cleaned = match.replace('\\N', '###LINEBREAK###')
-                cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-                cleaned = cleaned.replace('###LINEBREAK###', '\\N')
+                cleaned = re.sub(r'\s+', ' ', match).strip()
+                cleaned = re.sub(r'\s*\[br\]\s*', r'\\N', cleaned, flags=re.IGNORECASE)
                 variants.append(cleaned)
 
         if not variants:
-            # More complex regex to catch Russian text that might include \N
-            russian_match = re.search(r'[а-яА-ЯёЁ][а-яА-ЯёЁ\s\.\,\!\?\-\'\"\\\w]*[а-яА-ЯёЁ]', response_text)
+            # More complex regex to catch Russian text that might include [br]
+            # \w matches letters, numbers, underscore. [\[\]] matches brackets.
+            russian_match = re.search(r'[а-яА-ЯёЁ][а-яА-ЯёЁ\s\.\,\!\?\-\'\"\[\]brBR]*[а-яА-ЯёЁ]', response_text)
             if russian_match:
-                variants.append(russian_match.group().strip())
+                cleaned = russian_match.group().strip()
+                cleaned = re.sub(r'\s*\[br\]\s*', r'\\N', cleaned, flags=re.IGNORECASE)
+                variants.append(cleaned)
 
     # Fallback
     if not variants:
         if original_ru:
             variants = [original_ru]
         elif response_text.strip():
-            cleaned = response_text.strip().replace('\\N', '###LINEBREAK###')
+            cleaned = response_text.strip()
             cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-            cleaned = cleaned.replace('###LINEBREAK###', '\\N')
+            cleaned = re.sub(r'\s*\[br\]\s*', r'\\N', cleaned, flags=re.IGNORECASE)
             variants = [cleaned]
         else:
             variants = ["[Не удалось получить перевод]"]

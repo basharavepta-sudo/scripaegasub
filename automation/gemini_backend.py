@@ -50,10 +50,16 @@ def generate_prompt(data: Dict[str, Any]) -> str:
     context_after = data.get("context_after", [])
     feedback = data.get("feedback", "")
 
+    # Helper to sanitize inputs (hide \N from AI)
+    def sanitize(text):
+        if not text: return ""
+        return str(text).replace("\\N", " [br] ")
+
     prompt_parts = [
         "You are an expert subtitle editor and translator.",
         "Your task is to improve the translation or styling of a subtitle line.",
         "The subtitles are being translated from English to Russian.",
+        "IMPORTANT: The token ' [br] ' represents a line break. Use ' [br] ' instead of \\N or newlines.",
         ""
     ]
 
@@ -61,16 +67,16 @@ def generate_prompt(data: Dict[str, Any]) -> str:
     if context_before:
         prompt_parts.append("Context (lines before):")
         for item in context_before:
-            ru_text = item.get('ru', '') or '[empty]'
-            en_text = item.get('en', '') or '[no source]'
+            ru_text = sanitize(item.get('ru', '') or '[empty]')
+            en_text = sanitize(item.get('en', '') or '[no source]')
             prompt_parts.append(f"- RU: {ru_text}")
             prompt_parts.append(f"  EN: {en_text}")
         prompt_parts.append("")
 
     # Current line
     prompt_parts.append("=== CURRENT LINE TO EDIT ===")
-    ru_text = current_line.get('ru', '') or '[empty]'
-    en_text = current_line.get('en', '') or '[no source]'
+    ru_text = sanitize(current_line.get('ru', '') or '[empty]')
+    en_text = sanitize(current_line.get('en', '') or '[no source]')
     duration = current_line.get('duration', 0)
 
     prompt_parts.append(f"Russian (current): {ru_text}")
@@ -83,8 +89,8 @@ def generate_prompt(data: Dict[str, Any]) -> str:
     if context_after:
         prompt_parts.append("Context (lines after):")
         for item in context_after:
-            ru_text = item.get('ru', '') or '[empty]'
-            en_text = item.get('en', '') or '[no source]'
+            ru_text = sanitize(item.get('ru', '') or '[empty]')
+            en_text = sanitize(item.get('en', '') or '[no source]')
             prompt_parts.append(f"- RU: {ru_text}")
             prompt_parts.append(f"  EN: {en_text}")
         prompt_parts.append("")
@@ -106,9 +112,10 @@ def generate_prompt(data: Dict[str, Any]) -> str:
         "Return ONLY a raw JSON array of 3 strings, like this:",
         '["Вариант 1", "Вариант 2", "Вариант 3"]',
         "",
-        "IMPORTANT: If you use \\N for line breaks, escape it as \\\\N in the JSON string.",
-        "Do NOT include any markdown formatting, explanations, or code blocks.",
-        "Just the raw JSON array."
+        "IMPORTANT RULES:",
+        "1. DO NOT use backslashes or \\N. ALWAYS use ' [br] ' for line breaks.",
+        "2. Return ONLY the JSON array. No markdown, no explanations.",
+        "3. Example with line break: 'First line [br] Second line'"
     ])
 
     return "\n".join(prompt_parts)
@@ -165,6 +172,17 @@ def parse_variants(response_text: str) -> List[str]:
 
         # Ensure all variants are strings
         variants = [str(v) for v in variants if v is not None]
+
+        # RESTORE [br] TO \N
+        # We asked the AI to use [br], now we put \N back
+        restored_variants = []
+        for v in variants:
+            # Replace [br] (case insensitive) with \N
+            # Handle [br], [BR], [Br], etc.
+            v_restored = re.sub(r'\s*\[br\]\s*', r'\\N', v, flags=re.IGNORECASE)
+            restored_variants.append(v_restored)
+
+        variants = restored_variants
 
         # Ensure we have at least one variant
         if not variants:
