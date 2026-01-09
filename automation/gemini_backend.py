@@ -8,6 +8,7 @@ import json
 import os
 import sys
 import logging
+import re
 from typing import Dict, List, Optional, Any
 
 # Import google.generativeai - will be checked at runtime
@@ -102,6 +103,7 @@ def generate_prompt(data: Dict[str, Any]) -> str:
         "- Natural Russian language flow",
         "- Context from surrounding lines",
         "- Accuracy to the English source (if provided)",
+        "- IMPORTANT: Preserve subtitle formatting tags like \\N (newline) if they are present or needed.",
         "",
         "Return ONLY a raw JSON array of 3 strings, like this:",
         '["Вариант 1", "Вариант 2", "Вариант 3"]',
@@ -138,6 +140,17 @@ def parse_variants(response_text: str) -> List[str]:
     if not text:
         return ["[Пустой ответ от AI]"]
 
+    # Try to find JSON array using regex if the response is chatty
+    json_match = re.search(r'\[.*\]', text, re.DOTALL)
+    if json_match:
+        try:
+            potential_json = json_match.group(0)
+            parsed = json.loads(potential_json)
+            if isinstance(parsed, list) and all(isinstance(x, str) for x in parsed):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
     try:
         parsed = json.loads(text)
 
@@ -166,7 +179,19 @@ def parse_variants(response_text: str) -> List[str]:
         return variants
 
     except json.JSONDecodeError:
-        # Not valid JSON, return as single variant
+        # Not valid JSON
+        # Try to parse numbered list format
+        lines = text.splitlines()
+        variants = []
+        for line in lines:
+            # Matches "1. Text", "1) Text", "- Text"
+            match = re.match(r'^[\d\-]+[\.\)\:]\s*(.+)$', line.strip())
+            if match:
+                variants.append(match.group(1))
+
+        if variants:
+            return variants
+
         logger.warning("Response is not valid JSON, using as single variant")
         return [text]
 
@@ -212,8 +237,10 @@ def main():
         # Check if genai is available
         if genai is None:
             raise ImportError(
-                f"google-generativeai package not installed. "
-                f"Install with: pip install google-generativeai. "
+                f"google-generativeai package not installed.\n"
+                f"Python environment: {sys.executable}\n"
+                f"Install with: pip install -r requirements.txt\n"
+                f"Or: pip install google-generativeai\n"
                 f"Original error: {GENAI_IMPORT_ERROR}"
             )
 

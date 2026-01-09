@@ -127,6 +127,7 @@ def generate_translation_prompt(data: Dict[str, Any], config: Dict[str, Any]) ->
 
     # Request variants with clear format
     lines.append(f"\nДай {num_variants} вариант(а) локализации.")
+    lines.append("ВАЖНО: Сохраняй теги форматирования (например \\N) если они нужны.")
     lines.append("Формат ответа - ТОЛЬКО варианты, каждый с новой строки:")
     lines.append("1. **вариант перевода**")
     lines.append("2. **вариант перевода**")
@@ -264,9 +265,7 @@ def parse_variants(response_text: str, num_variants: int = 3, original_ru: str =
         # Remove any remaining ** markers
         cleaned = cleaned.replace('**', '')
 
-        # Clean up Aegisub line break commands that might interfere
-        # Replace \N with space, preserve the text
-        cleaned = cleaned.replace('\\N', ' ').replace('\\n', ' ')
+        # Clean up double spaces but PRESERVE \N and \n
         cleaned = re.sub(r'\s+', ' ', cleaned).strip()
 
         # Must contain Cyrillic and be substantial
@@ -280,8 +279,7 @@ def parse_variants(response_text: str, num_variants: int = 3, original_ru: str =
         bold_matches = re.findall(r'\*\*([^*]+)\*\*', response_text)
         for match in bold_matches:
             if re.search(r'[а-яА-ЯёЁ]', match):
-                cleaned = match.replace('\\N', ' ').replace('\\n', ' ')
-                cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+                cleaned = re.sub(r'\s+', ' ', match).strip()
                 variants.append(cleaned)
 
         if not variants:
@@ -294,7 +292,7 @@ def parse_variants(response_text: str, num_variants: int = 3, original_ru: str =
         if original_ru:
             variants = [original_ru]
         elif response_text.strip():
-            cleaned = response_text.strip().replace('\\N', ' ').replace('\\n', ' ')
+            cleaned = response_text.strip()
             variants = [re.sub(r'\s+', ' ', cleaned).strip()]
         else:
             variants = ["[Не удалось получить перевод]"]
