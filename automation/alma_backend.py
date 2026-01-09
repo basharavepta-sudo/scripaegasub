@@ -58,11 +58,20 @@ def load_config(config_path: str) -> Dict[str, Any]:
 
 # Style presets for translation
 STYLE_PRESETS = {
-    "natural": "естественно и разговорно",
+    "natural": "естественно и разговорно, адаптируя под русскую речь",
     "formal": "формально и официально",
-    "casual": "неформально, с разговорными выражениями",
+    "casual": "неформально, с разговорными выражениями и молодёжным сленгом",
     "literal": "буквально, близко к оригиналу"
 }
+
+# Base localization instructions (always included)
+LOCALIZATION_PROMPT = """Ты профессиональный локализатор субтитров с английского на русский.
+Важно: это НЕ просто перевод, а ЛОКАЛИЗАЦИЯ для русскоязычной аудитории.
+- Английский сленг, идиомы, культурные отсылки адаптируй под понятные русским аналоги
+- Используй живой русский язык, не кальки с английского
+- Сохраняй эмоциональный окрас и интонацию оригинала
+- Учитывай длительность субтитра (текст должен успеть прочитаться)
+"""
 
 
 def generate_translation_prompt(data: Dict[str, Any], config: Dict[str, Any]) -> str:
@@ -83,19 +92,20 @@ def generate_translation_prompt(data: Dict[str, Any], config: Dict[str, Any]) ->
     ru_text = current_line.get('ru', '') or ''
     duration = current_line.get('duration', 0)
 
-    # Build compact prompt for speed
-    lines = ["Переведи субтитр с английского на русский."]
+    # Build prompt with localization focus
+    lines = [LOCALIZATION_PROMPT.strip()]
 
     # Global context (if set)
     if global_context:
-        lines.append(f"Контекст: {global_context}")
+        lines.append(f"\nО проекте: {global_context}")
 
     # Style
     lines.append(f"Стиль: {style_desc}.")
 
     # Duration constraint
     if duration > 0:
-        lines.append(f"Длительность: {duration:.1f}с (текст должен уместиться).")
+        max_chars = int(duration * 15)  # ~15 chars per second readable
+        lines.append(f"Длительность: {duration:.1f}с (максимум ~{max_chars} символов).")
 
     # Context lines (compact)
     if context_before:
@@ -104,20 +114,24 @@ def generate_translation_prompt(data: Dict[str, Any], config: Dict[str, Any]) ->
             lines.append(f"Пред. строка: {ctx['ru']}")
 
     # Current line
-    lines.append(f"\nАнглийский: {en_text}")
-    if ru_text:
-        lines.append(f"Текущий русский (улучшить): {ru_text}")
+    lines.append(f"\n[АНГЛИЙСКИЙ]: {en_text}")
+    if ru_text and ru_text != en_text:
+        lines.append(f"[ТЕКУЩИЙ РУССКИЙ]: {ru_text}")
 
     # Instructions
     if default_instructions:
-        lines.append(f"\nИнструкции: {default_instructions}")
+        lines.append(f"\nУказания: {default_instructions}")
 
     if feedback:
-        lines.append(f"Дополнительно: {feedback}")
+        lines.append(f"Доп. требования: {feedback}")
 
-    # Request variants
-    lines.append(f"\nДай {num_variants} вариант(а/ов) перевода, по одному на строку.")
-    lines.append("Формат: только переводы, нумерация 1. 2. 3.")
+    # Request variants with clear format
+    lines.append(f"\nДай {num_variants} вариант(а) локализации.")
+    lines.append("Формат ответа - ТОЛЬКО варианты, каждый с новой строки:")
+    lines.append("1. **вариант перевода**")
+    lines.append("2. **вариант перевода**")
+    if num_variants >= 3:
+        lines.append("3. **вариант перевода**")
 
     return "\n".join(lines)
 
@@ -238,8 +252,22 @@ def parse_variants(response_text: str, num_variants: int = 3, original_ru: str =
             continue
 
         # Remove numbering (1., 1), 1:, 1.1., etc.)
-        cleaned = re.sub(r'^[\d]+[\.\)\:][\d]*[\.\)\:]?\s*', '', line)
-        cleaned = cleaned.strip()
+        cleaned = re.sub(r'^[\d]+[\.\)\:]\s*', '', line)
+
+        # Extract text from **bold** markers if present
+        bold_match = re.search(r'\*\*(.+?)\*\*', cleaned)
+        if bold_match:
+            cleaned = bold_match.group(1)
+        else:
+            cleaned = cleaned.strip()
+
+        # Remove any remaining ** markers
+        cleaned = cleaned.replace('**', '')
+
+        # Clean up Aegisub line break commands that might interfere
+        # Replace \N with space, preserve the text
+        cleaned = cleaned.replace('\\N', ' ').replace('\\n', ' ')
+        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
 
         # Must contain Cyrillic and be substantial
         if cleaned and len(cleaned) > 2:
@@ -248,16 +276,26 @@ def parse_variants(response_text: str, num_variants: int = 3, original_ru: str =
 
     # Try to extract Russian from response if no variants found
     if not variants:
-        russian_match = re.search(r'[а-яА-ЯёЁ][а-яА-ЯёЁ\s\.\,\!\?\-\'\"]*[а-яА-ЯёЁ]', response_text)
-        if russian_match:
-            variants.append(russian_match.group().strip())
+        # Also handle **bold** in full text
+        bold_matches = re.findall(r'\*\*([^*]+)\*\*', response_text)
+        for match in bold_matches:
+            if re.search(r'[а-яА-ЯёЁ]', match):
+                cleaned = match.replace('\\N', ' ').replace('\\n', ' ')
+                cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+                variants.append(cleaned)
+
+        if not variants:
+            russian_match = re.search(r'[а-яА-ЯёЁ][а-яА-ЯёЁ\s\.\,\!\?\-\'\"]*[а-яА-ЯёЁ]', response_text)
+            if russian_match:
+                variants.append(russian_match.group().strip())
 
     # Fallback
     if not variants:
         if original_ru:
             variants = [original_ru]
         elif response_text.strip():
-            variants = [response_text.strip()]
+            cleaned = response_text.strip().replace('\\N', ' ').replace('\\n', ' ')
+            variants = [re.sub(r'\s+', ' ', cleaned).strip()]
         else:
             variants = ["[Не удалось получить перевод]"]
 

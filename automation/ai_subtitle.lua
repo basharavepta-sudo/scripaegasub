@@ -192,17 +192,35 @@ end
 -- ============== Запуск Python ==============
 
 local function run_python_backend()
-    local cmd = python_executable .. ' "' .. python_script .. '" "' .. request_file .. '" "' .. response_file .. '" "' .. config_file .. '"'
+    local cmd
     if separator == "/" then
-        cmd = cmd .. " 2>&1"
+        -- Linux/Mac: просто запускаем
+        cmd = python_executable .. ' "' .. python_script .. '" "' .. request_file .. '" "' .. response_file .. '" "' .. config_file .. '" 2>&1'
+    else
+        -- Windows: используем start /b /wait чтобы скрыть окно CMD
+        -- Альтернативно используем pythonw если доступен
+        cmd = 'start /b /wait "" ' .. python_executable .. ' "' .. python_script .. '" "' .. request_file .. '" "' .. response_file .. '" "' .. config_file .. '"'
     end
-    local exit_code = os.execute(cmd)
-    if type(exit_code) == "boolean" then
-        return exit_code
-    elseif type(exit_code) == "number" then
-        return exit_code == 0
+
+    -- Используем io.popen вместо os.execute для скрытия окна
+    local handle = io.popen(cmd .. " && echo __SUCCESS__ || echo __FAILED__", "r")
+    if handle then
+        local output = handle:read("*a")
+        handle:close()
+        -- Проверяем успех по маркеру или наличию response файла
+        if output:find("__SUCCESS__") then
+            return true
+        end
     end
-    return exit_code ~= nil
+
+    -- Fallback: проверяем наличие response файла
+    local f = io.open(response_file, "r")
+    if f then
+        local content = f:read("*a")
+        f:close()
+        return content and content ~= ""
+    end
+    return false
 end
 
 -- ============== Главная функция перевода ==============
@@ -216,24 +234,48 @@ local function translate_line(subs, sel, active)
         return
     end
 
+    -- Короткий контекст для отображения
+    local ctx_preview = settings.global_context or ""
+    if #ctx_preview > 40 then
+        ctx_preview = ctx_preview:sub(1, 40) .. "..."
+    end
+    if ctx_preview == "" then
+        ctx_preview = "(не задан - нажми Настройки)"
+    end
+
     -- Диалог быстрых настроек
     local quick_dialog = {
         {class="label", label="Текущая строка: " .. (line.text:sub(1, 50) .. (#line.text > 50 and "..." or "")), x=0, y=0, width=3},
         {class="label", label="", x=0, y=1},
-        {class="label", label="Инструкции для этого перевода (опционально):", x=0, y=2, width=3},
-        {class="textbox", name="instructions", value="", x=0, y=3, width=3, height=2},
-        {class="label", label="", x=0, y=5},
-        {class="label", label="Вариантов:", x=0, y=6},
-        {class="intedit", name="num_variants", value=settings.num_variants, min=1, max=5, x=1, y=6},
+
+        -- Быстрое отображение/редактирование контекста
+        {class="label", label="Контекст проекта:", x=0, y=2},
+        {class="edit", name="global_context", value=settings.global_context or "", x=0, y=3, width=3},
+
+        {class="label", label="Инструкции для этого перевода:", x=0, y=4, width=3},
+        {class="textbox", name="instructions", value="", x=0, y=5, width=3, height=2},
+
+        {class="label", label="Вариантов:", x=0, y=7},
+        {class="intedit", name="num_variants", value=settings.num_variants, min=1, max=5, x=1, y=7},
+
+        {class="label", label="Стиль:", x=0, y=8},
+        {class="dropdown", name="style", items={"natural", "formal", "casual", "literal"}, value=settings.translation_style or "natural", x=1, y=8, width=2},
     }
 
-    local btn, res = aegisub.dialog.display(quick_dialog, {"Перевести", "Настройки проекта", "Отмена"})
+    local btn, res = aegisub.dialog.display(quick_dialog, {"Перевести", "Настройки", "Отмена"})
 
-    if btn == "Настройки проекта" then
+    if btn == "Настройки" then
         show_project_settings()
         return translate_line(subs, sel, active)  -- Повторить после настройки
     elseif btn == "Отмена" then
         return
+    end
+
+    -- Сохраняем изменённый контекст и стиль
+    if res.global_context ~= session_settings.global_context or res.style ~= session_settings.translation_style then
+        session_settings.global_context = res.global_context
+        session_settings.translation_style = res.style
+        save_settings()
     end
 
     -- Загружаем source если нужно
@@ -309,9 +351,11 @@ local function translate_line(subs, sel, active)
 
     write_json_file(request_file, request_data)
 
-    -- Обновляем num_variants в config
+    -- Обновляем настройки в config
     local config = read_json_file(config_file) or {}
     config.num_variants = res.num_variants
+    config.global_context = res.global_context
+    config.translation_style = res.style
     write_json_file(config_file, config)
 
     -- Запускаем

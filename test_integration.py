@@ -169,6 +169,7 @@ class TestPromptGeneration(unittest.TestCase):
         prompt = alma_backend.generate_translation_prompt(data, self.config)
         self.assertIn("Hello", prompt)
         self.assertIn("3 вариант", prompt)
+        self.assertIn("локализатор", prompt.lower())  # Проверяем наличие инструкций локализации
 
     def test_generate_prompt_with_feedback(self):
         data = {
@@ -238,6 +239,18 @@ class TestResponseParsing(unittest.TestCase):
         text = "Here are the translations:\n1. Привет\n2. Здравствуйте"
         variants = alma_backend.parse_variants(text)
         self.assertIn("Привет", variants)
+
+    def test_parse_bold_variants(self):
+        text = "1. **Привет мир**\n2. **Здравствуй мир**\n3. **Приветствую**"
+        variants = alma_backend.parse_variants(text)
+        self.assertEqual(len(variants), 3)
+        self.assertEqual(variants[0], "Привет мир")
+        self.assertEqual(variants[1], "Здравствуй мир")
+
+    def test_parse_with_backslash_n(self):
+        text = "1. Привет\\Nмир\n2. Тест"
+        variants = alma_backend.parse_variants(text)
+        self.assertIn("Привет мир", variants)  # \N заменяется на пробел
 
     def test_parse_empty_response(self):
         variants = alma_backend.parse_variants("", original_ru="Оригинал")
