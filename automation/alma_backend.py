@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
 ALMA Backend for AI Subtitle Assistant.
-Uses ALMA-13B-R or compatible models for translation via Hugging Face transformers or Ollama.
+Uses ALMA or compatible models for translation via Ollama or transformers.
+Optimized for speed and flexibility.
 """
 
 import json
@@ -9,7 +10,7 @@ import os
 import sys
 import logging
 import re
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Any
 
 # Setup logging
 logging.basicConfig(
@@ -19,7 +20,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Try importing transformers (for local model)
+# Try importing requests (for Ollama API)
+requests = None
+REQUESTS_ERROR = None
+
+try:
+    import requests
+except ImportError as e:
+    REQUESTS_ERROR = str(e)
+
+# Try importing transformers (optional, for local model)
 transformers = None
 torch = None
 TRANSFORMERS_ERROR = None
@@ -30,15 +40,6 @@ try:
     transformers = True
 except ImportError as e:
     TRANSFORMERS_ERROR = str(e)
-
-# Try importing requests (for Ollama API)
-requests = None
-REQUESTS_ERROR = None
-
-try:
-    import requests
-except ImportError as e:
-    REQUESTS_ERROR = str(e)
 
 
 def load_config(config_path: str) -> Dict[str, Any]:
@@ -55,63 +56,101 @@ def load_config(config_path: str) -> Dict[str, Any]:
     return config
 
 
-def generate_translation_prompt(data: Dict[str, Any], for_ollama: bool = False) -> str:
-    """Generates the prompt for ALMA model."""
+# Style presets for translation
+STYLE_PRESETS = {
+    "natural": "естественно и разговорно",
+    "formal": "формально и официально",
+    "casual": "неформально, с разговорными выражениями",
+    "literal": "буквально, близко к оригиналу"
+}
+
+
+def generate_translation_prompt(data: Dict[str, Any], config: Dict[str, Any]) -> str:
+    """Generates optimized prompt for translation."""
     current_line = data.get("current_line", {})
     context_before = data.get("context_before", [])
     context_after = data.get("context_after", [])
     feedback = data.get("feedback", "")
 
+    # Get config values
+    num_variants = config.get("num_variants", 3)
+    global_context = config.get("global_context", "")
+    default_instructions = config.get("default_instructions", "")
+    style = config.get("translation_style", "natural")
+    style_desc = STYLE_PRESETS.get(style, STYLE_PRESETS["natural"])
+
     en_text = current_line.get('en', '') or ''
     ru_text = current_line.get('ru', '') or ''
     duration = current_line.get('duration', 0)
 
-    # Build context info
-    context_info = []
+    # Build compact prompt for speed
+    lines = ["Переведи субтитр с английского на русский."]
 
+    # Global context (if set)
+    if global_context:
+        lines.append(f"Контекст: {global_context}")
+
+    # Style
+    lines.append(f"Стиль: {style_desc}.")
+
+    # Duration constraint
+    if duration > 0:
+        lines.append(f"Длительность: {duration:.1f}с (текст должен уместиться).")
+
+    # Context lines (compact)
     if context_before:
-        context_info.append("Previous lines:")
-        for item in context_before[-2:]:  # Last 2 lines for context
-            if item.get('en'):
-                context_info.append(f"  EN: {item['en']}")
-            if item.get('ru'):
-                context_info.append(f"  RU: {item['ru']}")
+        ctx = context_before[-1]  # Only last line for speed
+        if ctx.get('ru'):
+            lines.append(f"Пред. строка: {ctx['ru']}")
 
-    if context_after:
-        context_info.append("Next lines:")
-        for item in context_after[:2]:  # Next 2 lines
-            if item.get('en'):
-                context_info.append(f"  EN: {item['en']}")
-            if item.get('ru'):
-                context_info.append(f"  RU: {item['ru']}")
+    # Current line
+    lines.append(f"\nАнглийский: {en_text}")
+    if ru_text:
+        lines.append(f"Текущий русский (улучшить): {ru_text}")
 
-    context_str = "\n".join(context_info) if context_info else ""
+    # Instructions
+    if default_instructions:
+        lines.append(f"\nИнструкции: {default_instructions}")
 
-    # Different prompt format for Ollama vs direct ALMA
-    if for_ollama:
-        prompt = f"""You are a professional subtitle translator. Translate the following English subtitle to Russian.
-Keep it natural, concise (fits {duration:.1f}s duration), and contextually appropriate.
+    if feedback:
+        lines.append(f"Дополнительно: {feedback}")
 
-{context_str}
+    # Request variants
+    lines.append(f"\nДай {num_variants} вариант(а/ов) перевода, по одному на строку.")
+    lines.append("Формат: только переводы, нумерация 1. 2. 3.")
 
-Current line to translate:
-English: {en_text}
-{f"Current Russian (to improve): {ru_text}" if ru_text else ""}
-{f"User instruction: {feedback}" if feedback else ""}
+    return "\n".join(lines)
 
-Provide exactly 3 different Russian translation variants, one per line.
-Format: just the translations, numbered 1. 2. 3."""
-    else:
-        # ALMA-style prompt
-        prompt = f"Translate this from English to Russian:\nEnglish: {en_text}\nRussian:"
 
-    return prompt
+def generate_batch_prompt(lines_data: List[Dict], config: Dict[str, Any]) -> str:
+    """Generates prompt for batch translation (multiple lines at once)."""
+    num_variants = config.get("num_variants", 3)
+    global_context = config.get("global_context", "")
+    style = config.get("translation_style", "natural")
+    style_desc = STYLE_PRESETS.get(style, STYLE_PRESETS["natural"])
+
+    prompt_lines = ["Переведи субтитры с английского на русский."]
+
+    if global_context:
+        prompt_lines.append(f"Контекст: {global_context}")
+
+    prompt_lines.append(f"Стиль: {style_desc}.")
+    prompt_lines.append(f"\nСтроки для перевода:")
+
+    for i, line_data in enumerate(lines_data, 1):
+        en = line_data.get("en", "")
+        prompt_lines.append(f"{i}. {en}")
+
+    prompt_lines.append(f"\nДля каждой строки дай {num_variants} вариант(а/ов).")
+    prompt_lines.append("Формат:\n1.1. перевод\n1.2. перевод\n2.1. перевод\n...")
+
+    return "\n".join(prompt_lines)
 
 
 def generate_with_ollama(prompt: str, config: Dict[str, Any]) -> str:
     """Generate response using Ollama API."""
     if requests is None:
-        raise ImportError(f"requests package not installed. Install with: pip install requests. Error: {REQUESTS_ERROR}")
+        raise ImportError(f"requests not installed: pip install requests. Error: {REQUESTS_ERROR}")
 
     ollama_url = config.get("ollama_url", "http://localhost:11434")
     model = config.get("model", "llama3")
@@ -125,37 +164,38 @@ def generate_with_ollama(prompt: str, config: Dict[str, Any]) -> str:
         "stream": False,
         "options": {
             "temperature": temperature,
-            "num_predict": 500
+            "num_predict": 300,  # Reduced for speed
+            "top_p": 0.9,
+            "repeat_penalty": 1.1
         }
     }
 
-    logger.info(f"Calling Ollama API at {api_url} with model {model}")
+    logger.info(f"Calling Ollama: {model}")
 
     try:
-        response = requests.post(api_url, json=payload, timeout=120)
+        response = requests.post(api_url, json=payload, timeout=60)
         response.raise_for_status()
         result = response.json()
         return result.get("response", "")
     except requests.exceptions.ConnectionError:
-        raise ConnectionError(f"Cannot connect to Ollama at {ollama_url}. Make sure Ollama is running.")
+        raise ConnectionError(f"Ollama не запущен ({ollama_url}). Запустите: ollama serve")
     except requests.exceptions.Timeout:
-        raise TimeoutError("Ollama request timed out")
+        raise TimeoutError("Таймаут запроса к Ollama")
     except Exception as e:
-        raise RuntimeError(f"Ollama API error: {e}")
+        raise RuntimeError(f"Ошибка Ollama: {e}")
 
 
 def generate_with_transformers(prompt: str, config: Dict[str, Any], model_cache: Dict = {}) -> str:
     """Generate response using local transformers model."""
     if not transformers:
-        raise ImportError(f"transformers/torch not installed. Install with: pip install transformers torch. Error: {TRANSFORMERS_ERROR}")
+        raise ImportError(f"transformers/torch not installed. Error: {TRANSFORMERS_ERROR}")
 
     model_name = config.get("model", "haoranxu/ALMA-13B-R")
     temperature = config.get("temperature", 0.7)
     device = config.get("device", "cuda" if torch.cuda.is_available() else "cpu")
 
-    # Cache model and tokenizer
     if "model" not in model_cache:
-        logger.info(f"Loading model {model_name} on {device}...")
+        logger.info(f"Loading {model_name}...")
         model_cache["tokenizer"] = AutoTokenizer.from_pretrained(model_name)
         model_cache["model"] = AutoModelForCausalLM.from_pretrained(
             model_name,
@@ -164,7 +204,6 @@ def generate_with_transformers(prompt: str, config: Dict[str, Any], model_cache:
         )
         if device == "cpu":
             model_cache["model"] = model_cache["model"].to(device)
-        logger.info("Model loaded successfully")
 
     tokenizer = model_cache["tokenizer"]
     model = model_cache["model"]
@@ -174,23 +213,21 @@ def generate_with_transformers(prompt: str, config: Dict[str, Any], model_cache:
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
-            max_new_tokens=200,
+            max_new_tokens=150,
             temperature=temperature,
             do_sample=True,
             top_p=0.9,
-            num_return_sequences=1,
             pad_token_id=tokenizer.eos_token_id
         )
 
     response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    # Remove the prompt from response
     if response.startswith(prompt):
         response = response[len(prompt):].strip()
 
     return response
 
 
-def parse_variants(response_text: str, original_ru: str = "") -> List[str]:
+def parse_variants(response_text: str, num_variants: int = 3, original_ru: str = "") -> List[str]:
     """Parse translation variants from response."""
     variants = []
     lines = response_text.strip().split('\n')
@@ -200,44 +237,72 @@ def parse_variants(response_text: str, original_ru: str = "") -> List[str]:
         if not line:
             continue
 
-        # Remove numbering like "1.", "1)", "1:", etc.
-        cleaned = re.sub(r'^[\d]+[\.\)\:]\s*', '', line)
+        # Remove numbering (1., 1), 1:, 1.1., etc.)
+        cleaned = re.sub(r'^[\d]+[\.\)\:][\d]*[\.\)\:]?\s*', '', line)
         cleaned = cleaned.strip()
 
-        # Skip if it's just English or too short
+        # Must contain Cyrillic and be substantial
         if cleaned and len(cleaned) > 2:
-            # Check if it contains Cyrillic (Russian)
             if re.search(r'[а-яА-ЯёЁ]', cleaned):
                 variants.append(cleaned)
 
-    # If we couldn't parse variants with Cyrillic, try to extract Russian text
+    # Try to extract Russian from response if no variants found
     if not variants:
-        # Try to extract Russian text from anywhere in response
-        russian_match = re.search(r'[а-яА-ЯёЁ][а-яА-ЯёЁ\s\.\,\!\?\-]*[а-яА-ЯёЁ]', response_text)
+        russian_match = re.search(r'[а-яА-ЯёЁ][а-яА-ЯёЁ\s\.\,\!\?\-\'\"]*[а-яА-ЯёЁ]', response_text)
         if russian_match:
             variants.append(russian_match.group().strip())
 
-    # If still no variants with Cyrillic, use original_ru as fallback
+    # Fallback
     if not variants:
         if original_ru:
             variants = [original_ru]
         elif response_text.strip():
-            # Last resort: use response as is (might be English)
             variants = [response_text.strip()]
         else:
             variants = ["[Не удалось получить перевод]"]
 
-    # Limit to 3 variants and ensure uniqueness
+    # Deduplicate and limit
     seen = set()
-    unique_variants = []
+    unique = []
     for v in variants:
         if v not in seen:
             seen.add(v)
-            unique_variants.append(v)
-            if len(unique_variants) >= 3:
+            unique.append(v)
+            if len(unique) >= num_variants:
                 break
 
-    return unique_variants
+    return unique
+
+
+def parse_batch_variants(response_text: str, num_lines: int, num_variants: int = 3) -> List[List[str]]:
+    """Parse batch translation response."""
+    results = [[] for _ in range(num_lines)]
+
+    # Try to parse numbered format like 1.1., 1.2., 2.1., etc.
+    pattern = r'(\d+)\.(\d+)\.\s*(.+?)(?=\d+\.\d+\.|$)'
+    matches = re.findall(pattern, response_text, re.DOTALL)
+
+    for line_num, var_num, text in matches:
+        line_idx = int(line_num) - 1
+        if 0 <= line_idx < num_lines:
+            text = text.strip()
+            if text and re.search(r'[а-яА-ЯёЁ]', text):
+                if len(results[line_idx]) < num_variants:
+                    results[line_idx].append(text)
+
+    # Fallback: just split by lines
+    if all(len(r) == 0 for r in results):
+        lines = [l.strip() for l in response_text.split('\n') if l.strip()]
+        russian_lines = [l for l in lines if re.search(r'[а-яА-ЯёЁ]', l)]
+
+        for i, line in enumerate(russian_lines[:num_lines * num_variants]):
+            line_idx = i // num_variants
+            if line_idx < num_lines and len(results[line_idx]) < num_variants:
+                # Remove numbering
+                cleaned = re.sub(r'^[\d]+[\.\)\:]\s*', '', line)
+                results[line_idx].append(cleaned.strip())
+
+    return results
 
 
 def main():
@@ -258,89 +323,87 @@ def main():
     output_data: Dict[str, Any] = {}
 
     try:
-        # Load config
-        logger.info(f"Loading config from: {config_path}")
+        logger.info(f"Loading config: {config_path}")
         config = load_config(config_path)
 
-        backend_type = config.get("backend", "ollama")  # "ollama" or "transformers"
+        backend_type = config.get("backend", "ollama")
+        num_variants = min(max(config.get("num_variants", 3), 1), 5)  # Clamp 1-5
 
-        # Read request
-        logger.info(f"Reading request from: {request_file}")
+        logger.info(f"Reading request: {request_file}")
         if not os.path.exists(request_file):
             raise FileNotFoundError(f"Request file not found: {request_file}")
 
         with open(request_file, 'r', encoding='utf-8') as f:
             request_data = json.load(f)
 
-        # Check if feedback implies retry with higher creativity
+        # Check for retry with feedback
         if request_data.get("feedback"):
             config["temperature"] = config.get("retry_temperature", 0.9)
 
-        current_line = request_data.get("current_line", {})
-        original_ru = current_line.get("ru", "")
+        # Check for batch mode
+        batch_lines = request_data.get("batch_lines", [])
 
-        # Generate based on backend type
-        if backend_type == "ollama":
-            prompt = generate_translation_prompt(request_data, for_ollama=True)
-            logger.info("Using Ollama backend")
-            response_text = generate_with_ollama(prompt, config)
+        if batch_lines:
+            # Batch mode
+            logger.info(f"Batch mode: {len(batch_lines)} lines")
+            prompt = generate_batch_prompt(batch_lines, config)
+
+            if backend_type == "ollama":
+                response_text = generate_with_ollama(prompt, config)
+            else:
+                response_text = generate_with_transformers(prompt, config)
+
+            batch_results = parse_batch_variants(response_text, len(batch_lines), num_variants)
+            output_data = {"batch_variants": batch_results}
+
         else:
-            prompt = generate_translation_prompt(request_data, for_ollama=False)
-            logger.info("Using transformers backend")
-            response_text = generate_with_transformers(prompt, config)
+            # Single line mode
+            current_line = request_data.get("current_line", {})
+            original_ru = current_line.get("ru", "")
 
-        logger.info(f"Received response ({len(response_text)} chars)")
-        logger.debug(f"Raw response: {response_text}")
+            prompt = generate_translation_prompt(request_data, config)
+            logger.debug(f"Prompt: {prompt}")
 
-        # Parse variants
-        variants = parse_variants(response_text, original_ru)
+            if backend_type == "ollama":
+                response_text = generate_with_ollama(prompt, config)
+            else:
+                response_text = generate_with_transformers(prompt, config)
 
-        # If we only got one variant from ALMA-style translation, generate more
-        if len(variants) < 3 and backend_type == "transformers":
-            # Generate additional variants with different temperatures
-            for temp in [0.8, 0.95]:
-                if len(variants) >= 3:
-                    break
-                config["temperature"] = temp
-                additional = generate_with_transformers(prompt, config)
-                for v in parse_variants(additional, ""):
-                    if v not in variants:
-                        variants.append(v)
-                        if len(variants) >= 3:
-                            break
+            logger.info(f"Response: {len(response_text)} chars")
 
-        logger.info(f"Parsed {len(variants)} variants")
-        output_data = {"variants": variants}
+            variants = parse_variants(response_text, num_variants, original_ru)
+            logger.info(f"Parsed {len(variants)} variants")
+
+            output_data = {"variants": variants}
 
     except FileNotFoundError as e:
         logger.error(f"File not found: {e}")
         output_data = {"error": str(e)}
     except json.JSONDecodeError as e:
-        logger.error(f"JSON decode error: {e}")
-        output_data = {"error": f"Invalid JSON in request file: {e}"}
+        logger.error(f"JSON error: {e}")
+        output_data = {"error": f"Invalid JSON: {e}"}
     except ImportError as e:
         logger.error(f"Import error: {e}")
         output_data = {"error": str(e)}
     except ConnectionError as e:
         logger.error(f"Connection error: {e}")
         output_data = {"error": str(e)}
-    except ValueError as e:
-        logger.error(f"Value error: {e}")
+    except TimeoutError as e:
+        logger.error(f"Timeout: {e}")
         output_data = {"error": str(e)}
     except Exception as e:
-        logger.error(f"Unexpected error: {e}", exc_info=True)
-        output_data = {"error": f"Unexpected error: {str(e)}"}
+        logger.error(f"Error: {e}", exc_info=True)
+        output_data = {"error": f"Ошибка: {str(e)}"}
 
-    # Write response
-    logger.info(f"Writing response to: {response_file}")
+    logger.info(f"Writing response: {response_file}")
     try:
         with open(response_file, 'w', encoding='utf-8') as f:
             json.dump(output_data, f, ensure_ascii=False, indent=2)
     except Exception as e:
-        logger.error(f"Failed to write response file: {e}")
+        logger.error(f"Write error: {e}")
         try:
             with open(response_file, 'w', encoding='utf-8') as f:
-                json.dump({"error": f"Failed to write response: {e}"}, f)
+                json.dump({"error": f"Write failed: {e}"}, f)
         except Exception:
             pass
         sys.exit(1)
