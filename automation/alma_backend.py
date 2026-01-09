@@ -244,13 +244,35 @@ def generate_with_transformers(prompt: str, config: Dict[str, Any], model_cache:
 def parse_variants(response_text: str, num_variants: int = 3, original_ru: str = "") -> List[str]:
     """Parse translation variants from response."""
     variants = []
-    lines = response_text.strip().split('\n')
+    raw_lines = response_text.strip().split('\n')
+    merged_lines = []
 
-    for line in lines:
+    # Merge lines that are split by \N
+    current_line = ""
+    for line in raw_lines:
         line = line.strip()
         if not line:
             continue
 
+        # Check if we should merge with previous line
+        # Heuristic: if previous line ends with \N, it's a hard line break within the subtitle,
+        # so the next line of text belongs to the same subtitle variant.
+        should_merge = False
+        if current_line:
+            if current_line.endswith(r'\N') or current_line.endswith(r'\N"') or current_line.endswith(r"\N'"):
+                should_merge = True
+
+        if should_merge:
+            current_line += line
+        else:
+            if current_line:
+                merged_lines.append(current_line)
+            current_line = line
+
+    if current_line:
+        merged_lines.append(current_line)
+
+    for line in merged_lines:
         # Remove numbering (1., 1), 1:, 1.1., etc.)
         cleaned = re.sub(r'^[\d]+[\.\)\:]\s*', '', line)
 
