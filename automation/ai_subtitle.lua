@@ -1,7 +1,7 @@
 script_name = "AI Subtitle Assistant"
-script_description = "AI-powered subtitle editing with Gemini"
+script_description = "AI-powered subtitle editing with ALMA/Ollama"
 script_author = "AI Assistant"
-script_version = "1.1"
+script_version = "2.0"
 
 -- Настройка путей для модулей
 -- Получаем путь к текущему скрипту, чтобы найти соседние файлы
@@ -22,7 +22,7 @@ local request_file = temp_dir .. separator .. "aegisub_ai_request.json"
 local response_file = temp_dir .. separator .. "aegisub_ai_response.json"
 
 -- Пути к скриптам и конфигам
-local python_script = script_path .. "gemini_backend.py"
+local python_script = script_path .. "alma_backend.py"
 local config_file = script_path .. "config.json"
 
 -- Определение команды Python (python3 на Linux/Mac, python на Windows)

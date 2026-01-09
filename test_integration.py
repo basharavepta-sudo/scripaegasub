@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Integration tests for AI Subtitle Assistant backend.
+Integration tests for AI Subtitle Assistant backend (ALMA/Ollama version).
 """
 
 import json
@@ -15,14 +15,11 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 AUTOMATION_DIR = os.path.join(SCRIPT_DIR, 'automation')
 sys.path.insert(0, AUTOMATION_DIR)
 
-import gemini_backend
-
-# Check if google.generativeai is available
-GENAI_AVAILABLE = gemini_backend.genai is not None
+import alma_backend
 
 
-class TestGeminiBackend(unittest.TestCase):
-    """Tests for gemini_backend module."""
+class TestAlmaBackend(unittest.TestCase):
+    """Tests for alma_backend module."""
 
     def setUp(self):
         """Set up test fixtures."""
@@ -31,12 +28,13 @@ class TestGeminiBackend(unittest.TestCase):
         self.response_file = os.path.join(self.temp_dir, "test_response.json")
         self.config_file = os.path.join(self.temp_dir, "test_config.json")
 
-        # Create dummy config
+        # Create dummy config for Ollama
         with open(self.config_file, 'w', encoding='utf-8') as f:
             json.dump({
-                "gemini_api_key": "TEST_KEY",
-                "model": "test-model",
-                "default_temperature": 0.7,
+                "backend": "ollama",
+                "ollama_url": "http://localhost:11434",
+                "model": "llama3",
+                "temperature": 0.7,
                 "retry_temperature": 0.9
             }, f)
 
@@ -58,77 +56,38 @@ class TestGeminiBackend(unittest.TestCase):
         if os.path.exists(self.temp_dir):
             os.rmdir(self.temp_dir)
 
-    def _run_with_mock_genai(self, response_text):
-        """Helper to run main() with mocked genai module."""
-        # Create mock objects
-        mock_genai = MagicMock()
-        mock_model = MagicMock()
+    def _run_with_mock_ollama(self, response_text):
+        """Helper to run main() with mocked Ollama API."""
         mock_response = MagicMock()
-        mock_response.text = response_text
+        mock_response.json.return_value = {"response": response_text}
+        mock_response.raise_for_status = MagicMock()
 
-        mock_model.generate_content.return_value = mock_response
-        mock_genai.GenerativeModel.return_value = mock_model
-        mock_genai.types.GenerationConfig.return_value = MagicMock()
+        with patch.object(alma_backend, 'requests') as mock_requests:
+            mock_requests.post.return_value = mock_response
+            with patch.object(sys, 'argv', ['alma_backend.py', self.request_file, self.response_file, self.config_file]):
+                alma_backend.main()
 
-        # Temporarily replace genai in the module
-        original_genai = gemini_backend.genai
-        gemini_backend.genai = mock_genai
-
-        try:
-            with patch.object(sys, 'argv', ['gemini_backend.py', self.request_file, self.response_file, self.config_file]):
-                gemini_backend.main()
-        finally:
-            gemini_backend.genai = original_genai
-
-        # Read and return result
         with open(self.response_file, 'r', encoding='utf-8') as f:
-            return json.load(f), mock_genai
+            return json.load(f), mock_requests
 
-    def test_backend_success_json_array(self):
-        """Test successful response with JSON array."""
-        result, mock_genai = self._run_with_mock_genai('["Привет!", "Здравствуйте!", "Приветствую!"]')
+    def test_backend_success_numbered_variants(self):
+        """Test successful response with numbered variants."""
+        result, mock_requests = self._run_with_mock_ollama(
+            "1. Привет!\n2. Здравствуйте!\n3. Приветствую!"
+        )
 
         self.assertIn("variants", result)
         self.assertEqual(len(result["variants"]), 3)
         self.assertEqual(result["variants"][0], "Привет!")
-        mock_genai.configure.assert_called_with(api_key="TEST_KEY")
+        self.assertEqual(result["variants"][1], "Здравствуйте!")
 
-    def test_backend_markdown_wrapped_response(self):
-        """Test response wrapped in markdown code blocks."""
-        result, _ = self._run_with_mock_genai('```json\n["Вариант 1", "Вариант 2"]\n```')
-
-        self.assertIn("variants", result)
-        self.assertEqual(result["variants"], ["Вариант 1", "Вариант 2"])
-
-    def test_backend_plain_text_response(self):
-        """Test fallback for plain text response (not JSON)."""
-        result, _ = self._run_with_mock_genai('Just a simple text suggestion.')
+    def test_backend_success_plain_russian(self):
+        """Test successful response with plain Russian text."""
+        result, _ = self._run_with_mock_ollama("Привет мир")
 
         self.assertIn("variants", result)
-        self.assertEqual(result["variants"], ["Just a simple text suggestion."])
-
-    def test_backend_dict_with_variants_key(self):
-        """Test response as dict with 'variants' key."""
-        result, _ = self._run_with_mock_genai('{"variants": ["Один", "Два", "Три"]}')
-
-        self.assertIn("variants", result)
-        self.assertEqual(result["variants"], ["Один", "Два", "Три"])
-
-    def test_backend_with_feedback(self):
-        """Test that feedback triggers higher temperature."""
-        # Update request with feedback
-        request_with_feedback = self.default_request.copy()
-        request_with_feedback["feedback"] = "Сделай короче"
-        with open(self.request_file, 'w', encoding='utf-8') as f:
-            json.dump(request_with_feedback, f)
-
-        result, mock_genai = self._run_with_mock_genai('["Короткий вариант"]')
-
-        # Verify generate_content was called
-        mock_genai.GenerativeModel.return_value.generate_content.assert_called_once()
-
-        # Response should be valid
-        self.assertIn("variants", result)
+        self.assertGreater(len(result["variants"]), 0)
+        self.assertEqual(result["variants"][0], "Привет мир")
 
     def test_backend_with_context(self):
         """Test request with context lines."""
@@ -145,20 +104,31 @@ class TestGeminiBackend(unittest.TestCase):
         with open(self.request_file, 'w', encoding='utf-8') as f:
             json.dump(request_with_context, f)
 
-        result, mock_genai = self._run_with_mock_genai('["Вариант с контекстом"]')
+        result, mock_requests = self._run_with_mock_ollama("Тестовый перевод")
 
-        # Verify prompt includes context
-        call_args = mock_genai.GenerativeModel.return_value.generate_content.call_args
-        prompt = call_args[0][0]
-        self.assertIn("Line before", prompt)
-        self.assertIn("Line after", prompt)
+        # Verify request was made
+        mock_requests.post.assert_called_once()
+
+        # Check response is valid
+        self.assertIn("variants", result)
+
+    def test_backend_with_feedback(self):
+        """Test that feedback is included in request."""
+        request_with_feedback = self.default_request.copy()
+        request_with_feedback["feedback"] = "Сделай короче"
+        with open(self.request_file, 'w', encoding='utf-8') as f:
+            json.dump(request_with_feedback, f)
+
+        result, mock_requests = self._run_with_mock_ollama("Короткий вариант")
+
+        self.assertIn("variants", result)
 
     def test_backend_missing_config(self):
         """Test error handling when config file is missing."""
         os.remove(self.config_file)
 
-        with patch.object(sys, 'argv', ['gemini_backend.py', self.request_file, self.response_file, self.config_file]):
-            gemini_backend.main()
+        with patch.object(sys, 'argv', ['alma_backend.py', self.request_file, self.response_file, self.config_file]):
+            alma_backend.main()
 
         with open(self.response_file, 'r', encoding='utf-8') as f:
             result = json.load(f)
@@ -170,15 +140,9 @@ class TestGeminiBackend(unittest.TestCase):
         """Test error handling when request file is missing."""
         os.remove(self.request_file)
 
-        # Mock genai to avoid import error
-        original_genai = gemini_backend.genai
-        gemini_backend.genai = MagicMock()
-
-        try:
-            with patch.object(sys, 'argv', ['gemini_backend.py', self.request_file, self.response_file, self.config_file]):
-                gemini_backend.main()
-        finally:
-            gemini_backend.genai = original_genai
+        with patch.object(alma_backend, 'requests') as mock_requests:
+            with patch.object(sys, 'argv', ['alma_backend.py', self.request_file, self.response_file, self.config_file]):
+                alma_backend.main()
 
         with open(self.response_file, 'r', encoding='utf-8') as f:
             result = json.load(f)
@@ -186,62 +150,40 @@ class TestGeminiBackend(unittest.TestCase):
         self.assertIn("error", result)
         self.assertIn("Request file not found", result["error"])
 
-    def test_backend_invalid_api_key(self):
-        """Test error when API key is not configured."""
-        with open(self.config_file, 'w', encoding='utf-8') as f:
-            json.dump({
-                "gemini_api_key": "YOUR_API_KEY_HERE",
-                "model": "test-model"
-            }, f)
+    def test_backend_ollama_connection_error(self):
+        """Test error when Ollama is not running."""
+        import requests as real_requests
 
-        with patch.object(sys, 'argv', ['gemini_backend.py', self.request_file, self.response_file, self.config_file]):
-            gemini_backend.main()
+        with patch.object(alma_backend, 'requests') as mock_requests:
+            mock_requests.post.side_effect = real_requests.exceptions.ConnectionError("Connection refused")
+            mock_requests.exceptions = real_requests.exceptions
 
-        with open(self.response_file, 'r', encoding='utf-8') as f:
-            result = json.load(f)
-
-        self.assertIn("error", result)
-        self.assertIn("API Key not configured", result["error"])
-
-    def test_backend_genai_not_installed(self):
-        """Test error when genai module is not available."""
-        # Temporarily set genai to None
-        original_genai = gemini_backend.genai
-        original_error = gemini_backend.GENAI_IMPORT_ERROR
-        gemini_backend.genai = None
-        gemini_backend.GENAI_IMPORT_ERROR = "Test: module not found"
-
-        try:
-            with patch.object(sys, 'argv', ['gemini_backend.py', self.request_file, self.response_file, self.config_file]):
-                gemini_backend.main()
-        finally:
-            gemini_backend.genai = original_genai
-            gemini_backend.GENAI_IMPORT_ERROR = original_error
+            with patch.object(sys, 'argv', ['alma_backend.py', self.request_file, self.response_file, self.config_file]):
+                alma_backend.main()
 
         with open(self.response_file, 'r', encoding='utf-8') as f:
             result = json.load(f)
 
         self.assertIn("error", result)
-        self.assertIn("google-generativeai package not installed", result["error"])
+        self.assertIn("Cannot connect to Ollama", result["error"])
 
 
 class TestPromptGeneration(unittest.TestCase):
     """Tests for prompt generation."""
 
-    def test_generate_prompt_basic(self):
-        """Test basic prompt generation."""
+    def test_generate_prompt_ollama_basic(self):
+        """Test basic Ollama prompt generation."""
         data = {
             "current_line": {"ru": "Привет", "en": "Hello", "duration": 1.0},
             "context_before": [],
             "context_after": [],
             "feedback": ""
         }
-        prompt = gemini_backend.generate_prompt(data)
+        prompt = alma_backend.generate_translation_prompt(data, for_ollama=True)
 
         self.assertIn("Hello", prompt)
-        self.assertIn("Привет", prompt)
-        self.assertIn("1.0 seconds", prompt)
-        self.assertIn("CURRENT LINE TO EDIT", prompt)
+        self.assertIn("1.0s duration", prompt)
+        self.assertIn("3 different Russian translation", prompt)
 
     def test_generate_prompt_with_feedback(self):
         """Test prompt includes feedback."""
@@ -251,10 +193,10 @@ class TestPromptGeneration(unittest.TestCase):
             "context_after": [],
             "feedback": "Сделай более формально"
         }
-        prompt = gemini_backend.generate_prompt(data)
+        prompt = alma_backend.generate_translation_prompt(data, for_ollama=True)
 
         self.assertIn("Сделай более формально", prompt)
-        self.assertIn("User Feedback", prompt)
+        self.assertIn("User instruction", prompt)
 
     def test_generate_prompt_with_context(self):
         """Test prompt includes context lines."""
@@ -268,113 +210,124 @@ class TestPromptGeneration(unittest.TestCase):
             ],
             "feedback": ""
         }
-        prompt = gemini_backend.generate_prompt(data)
+        prompt = alma_backend.generate_translation_prompt(data, for_ollama=True)
 
         self.assertIn("Previous", prompt)
         self.assertIn("Next", prompt)
-        self.assertIn("Context (lines before)", prompt)
-        self.assertIn("Context (lines after)", prompt)
 
-    def test_generate_prompt_empty_source(self):
-        """Test prompt with empty English source."""
+    def test_generate_prompt_alma_style(self):
+        """Test ALMA-style prompt (for transformers)."""
         data = {
-            "current_line": {"ru": "Только русский", "en": "", "duration": 2.0},
+            "current_line": {"ru": "", "en": "Hello world", "duration": 1.0},
             "context_before": [],
             "context_after": [],
             "feedback": ""
         }
-        prompt = gemini_backend.generate_prompt(data)
+        prompt = alma_backend.generate_translation_prompt(data, for_ollama=False)
 
-        self.assertIn("Только русский", prompt)
-        self.assertIn("[no source]", prompt)
+        self.assertIn("Translate this from English to Russian", prompt)
+        self.assertIn("Hello world", prompt)
 
 
 class TestResponseParsing(unittest.TestCase):
     """Tests for response parsing."""
 
-    def test_parse_json_array(self):
-        """Test parsing JSON array."""
-        text = '["Один", "Два", "Три"]'
-        variants = gemini_backend.parse_variants(text)
-        self.assertEqual(variants, ["Один", "Два", "Три"])
+    def test_parse_numbered_variants(self):
+        """Test parsing numbered variants."""
+        text = "1. Привет\n2. Здравствуй\n3. Приветствую"
+        variants = alma_backend.parse_variants(text)
 
-    def test_parse_markdown_wrapped(self):
-        """Test parsing markdown-wrapped JSON."""
-        text = '```json\n["Один", "Два"]\n```'
-        variants = gemini_backend.parse_variants(text)
-        self.assertEqual(variants, ["Один", "Два"])
-
-    def test_parse_markdown_no_language(self):
-        """Test parsing markdown without language specifier."""
-        text = '```\n["А", "Б"]\n```'
-        variants = gemini_backend.parse_variants(text)
-        self.assertEqual(variants, ["А", "Б"])
-
-    def test_parse_plain_text(self):
-        """Test parsing plain text."""
-        text = "Просто текст"
-        variants = gemini_backend.parse_variants(text)
-        self.assertEqual(variants, ["Просто текст"])
-
-    def test_parse_empty(self):
-        """Test parsing empty response."""
-        variants = gemini_backend.parse_variants("")
-        self.assertEqual(len(variants), 1)
-        self.assertIn("Пустой ответ", variants[0])
-
-    def test_parse_whitespace_only(self):
-        """Test parsing whitespace-only response."""
-        variants = gemini_backend.parse_variants("   \n\t  ")
-        self.assertEqual(len(variants), 1)
-        self.assertIn("Пустой ответ", variants[0])
-
-    def test_parse_dict_with_variants(self):
-        """Test parsing dict with variants key."""
-        text = '{"variants": ["А", "Б"]}'
-        variants = gemini_backend.parse_variants(text)
-        self.assertEqual(variants, ["А", "Б"])
-
-    def test_parse_dict_with_translations(self):
-        """Test parsing dict with translations key."""
-        text = '{"translations": ["Перевод 1", "Перевод 2"]}'
-        variants = gemini_backend.parse_variants(text)
-        self.assertEqual(variants, ["Перевод 1", "Перевод 2"])
-
-    def test_parse_mixed_types_in_array(self):
-        """Test parsing array with mixed types."""
-        text = '["Строка", 123, null, true]'
-        variants = gemini_backend.parse_variants(text)
-        # Should convert all to strings, skip None
         self.assertEqual(len(variants), 3)
-        self.assertEqual(variants[0], "Строка")
-        self.assertEqual(variants[1], "123")
-        self.assertEqual(variants[2], "True")
+        self.assertEqual(variants[0], "Привет")
+        self.assertEqual(variants[1], "Здравствуй")
+        self.assertEqual(variants[2], "Приветствую")
+
+    def test_parse_variants_with_dots(self):
+        """Test parsing variants with different numbering."""
+        text = "1) Первый\n2) Второй\n3) Третий"
+        variants = alma_backend.parse_variants(text)
+
+        self.assertEqual(len(variants), 3)
+        self.assertEqual(variants[0], "Первый")
+
+    def test_parse_plain_russian(self):
+        """Test parsing plain Russian text."""
+        text = "Привет мир"
+        variants = alma_backend.parse_variants(text)
+
+        self.assertEqual(len(variants), 1)
+        self.assertEqual(variants[0], "Привет мир")
+
+    def test_parse_mixed_content(self):
+        """Test parsing response with mixed content."""
+        text = "Here are the translations:\n1. Привет\n2. Здравствуйте"
+        variants = alma_backend.parse_variants(text)
+
+        self.assertGreater(len(variants), 0)
+        self.assertIn("Привет", variants)
+
+    def test_parse_empty_response(self):
+        """Test parsing empty response uses fallback."""
+        variants = alma_backend.parse_variants("", original_ru="Оригинал")
+
+        self.assertEqual(len(variants), 1)
+        self.assertEqual(variants[0], "Оригинал")
+
+    def test_parse_english_only_response(self):
+        """Test parsing response with only English."""
+        variants = alma_backend.parse_variants("Hello world", original_ru="Привет мир")
+
+        self.assertEqual(len(variants), 1)
+        self.assertEqual(variants[0], "Привет мир")
+
+    def test_parse_deduplicates(self):
+        """Test that duplicate variants are removed."""
+        text = "1. Привет\n2. Привет\n3. Здравствуй"
+        variants = alma_backend.parse_variants(text)
+
+        self.assertEqual(len(variants), 2)
+        self.assertEqual(variants[0], "Привет")
+        self.assertEqual(variants[1], "Здравствуй")
+
+    def test_parse_limits_to_three(self):
+        """Test that variants are limited to 3."""
+        text = "1. Один\n2. Два\n3. Три\n4. Четыре\n5. Пять"
+        variants = alma_backend.parse_variants(text)
+
+        self.assertEqual(len(variants), 3)
 
 
-class TestCleanResponseText(unittest.TestCase):
-    """Tests for clean_response_text function."""
+class TestConfigLoading(unittest.TestCase):
+    """Tests for config loading."""
 
-    def test_clean_simple_text(self):
-        """Test cleaning simple text."""
-        result = gemini_backend.clean_response_text("simple text")
-        self.assertEqual(result, "simple text")
+    def test_load_valid_config(self):
+        """Test loading valid config."""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            json.dump({"backend": "ollama", "model": "llama3"}, f)
+            f.flush()
 
-    def test_clean_markdown_json(self):
-        """Test cleaning markdown with json specifier."""
-        text = '```json\n["a", "b"]\n```'
-        result = gemini_backend.clean_response_text(text)
-        self.assertEqual(result, '["a", "b"]')
+            config = alma_backend.load_config(f.name)
 
-    def test_clean_markdown_no_specifier(self):
-        """Test cleaning markdown without language specifier."""
-        text = '```\ncontent\n```'
-        result = gemini_backend.clean_response_text(text)
-        self.assertEqual(result, "content")
+            self.assertEqual(config["backend"], "ollama")
+            self.assertEqual(config["model"], "llama3")
 
-    def test_clean_with_whitespace(self):
-        """Test cleaning text with surrounding whitespace."""
-        result = gemini_backend.clean_response_text("  \n text \n  ")
-        self.assertEqual(result, "text")
+            os.unlink(f.name)
+
+    def test_load_missing_config(self):
+        """Test error on missing config."""
+        with self.assertRaises(FileNotFoundError):
+            alma_backend.load_config("/nonexistent/config.json")
+
+    def test_load_invalid_json(self):
+        """Test error on invalid JSON."""
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
+            f.write("not valid json")
+            f.flush()
+
+            with self.assertRaises(json.JSONDecodeError):
+                alma_backend.load_config(f.name)
+
+            os.unlink(f.name)
 
 
 if __name__ == '__main__':

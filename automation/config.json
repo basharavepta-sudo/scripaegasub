@@ -1,7 +1,14 @@
 {
-  "gemini_api_key": "YOUR_API_KEY_HERE",
-  "model": "gemini-2.0-flash-exp",
-  "default_temperature": 0.7,
+  "backend": "ollama",
+  "ollama_url": "http://localhost:11434",
+  "model": "llama3",
+  "temperature": 0.7,
   "retry_temperature": 0.9,
-  "notes": "Получить API ключ: https://aistudio.google.com/app/apikey"
+  "device": "cuda",
+  "notes": {
+    "backend_options": "ollama (recommended) or transformers (requires GPU)",
+    "ollama_models": "llama3, mistral, qwen2, or any model with Russian support",
+    "transformers_model": "haoranxu/ALMA-13B-R for direct translation",
+    "ollama_install": "https://ollama.ai - then run: ollama pull llama3"
+  }
 }
