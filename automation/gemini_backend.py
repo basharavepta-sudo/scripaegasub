@@ -43,7 +43,7 @@ def load_config(config_path: str) -> Dict[str, Any]:
     return config
 
 
-def generate_prompt(data: Dict[str, Any]) -> str:
+def generate_prompt(data: Dict[str, Any], num_variants: int = 3) -> str:
     """Generates the prompt for Gemini."""
     current_line = data.get("current_line", {})
     context_before = data.get("context_before", [])
@@ -102,20 +102,21 @@ def generate_prompt(data: Dict[str, Any]) -> str:
 
     # Instructions
     prompt_parts.extend([
-        "Please provide exactly 3 different variants of the Russian translation/edit.",
+        f"Please provide exactly {num_variants} different variants of the Russian translation/edit.",
         "Consider:",
         "- The duration constraint (text should fit the timing)",
         "- Natural Russian language flow",
         "- Context from surrounding lines",
         "- Accuracy to the English source (if provided)",
         "",
-        "Return ONLY a raw JSON array of 3 strings, like this:",
-        '["Вариант 1", "Вариант 2", "Вариант 3"]',
+        f"Return ONLY a raw JSON array of {num_variants} strings, like this:",
+        f'["Вариант 1", ... (total {num_variants} items) ...]',
         "",
         "IMPORTANT RULES:",
         "1. DO NOT use backslashes or \\N. ALWAYS use ' [br] ' for line breaks.",
-        "2. Return ONLY the JSON array. No markdown, no explanations.",
-        "3. Example with line break: 'First line [br] Second line'"
+        "2. Try to preserve the approximate position of line breaks ([br]) to match the original rhythm.",
+        "3. Return ONLY the JSON array. No markdown, no explanations.",
+        "4. Example with line break: 'First line [br] Second line'"
     ])
 
     return "\n".join(prompt_parts)
@@ -254,7 +255,8 @@ def main():
             request_data = json.load(f)
 
         # Generate prompt
-        prompt = generate_prompt(request_data)
+        num_variants = min(max(config.get("num_variants", 3), 1), 5)
+        prompt = generate_prompt(request_data, num_variants)
         logger.debug(f"Generated prompt:\n{prompt}")
 
         # Determine temperature

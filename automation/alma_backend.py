@@ -34,14 +34,6 @@ transformers = None
 torch = None
 TRANSFORMERS_ERROR = None
 
-try:
-    import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-    transformers = True
-except ImportError as e:
-    TRANSFORMERS_ERROR = str(e)
-
-
 def load_config(config_path: str) -> Dict[str, Any]:
     """Loads configuration from json file."""
     if not os.path.exists(config_path):
@@ -125,7 +117,9 @@ def generate_translation_prompt(data: Dict[str, Any], config: Dict[str, Any]) ->
         lines.append(f"[ТЕКУЩИЙ РУССКИЙ]: {ru_text}")
 
     # Instructions
-    lines.append("\nВАЖНО: Ипользуй токен ' [br] ' для переноса строки вместо \\N.")
+    lines.append("\nВАЖНО:")
+    lines.append("1. Используй токен ' [br] ' для переноса строки вместо \\N.")
+    lines.append("2. Старайся сохранять места переносов (ритм) как в оригинале, если это уместно.")
 
     if default_instructions:
         lines.append(f"Указания: {default_instructions}")
@@ -186,7 +180,7 @@ def generate_with_ollama(prompt: str, config: Dict[str, Any]) -> str:
         "stream": False,
         "options": {
             "temperature": temperature,
-            "num_predict": 300,  # Reduced for speed
+            "num_predict": 500,  # Increased to prevent truncation
             "top_p": 0.9,
             "repeat_penalty": 1.1
         }
@@ -209,8 +203,12 @@ def generate_with_ollama(prompt: str, config: Dict[str, Any]) -> str:
 
 def generate_with_transformers(prompt: str, config: Dict[str, Any], model_cache: Dict = {}) -> str:
     """Generate response using local transformers model."""
-    if not transformers:
-        raise ImportError(f"transformers/torch not installed. Error: {TRANSFORMERS_ERROR}")
+    # Lazy import to avoid startup lag for Ollama users
+    try:
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+    except ImportError as e:
+        raise ImportError(f"transformers/torch not installed. Install them to use local models. Error: {e}")
 
     model_name = config.get("model", "haoranxu/ALMA-13B-R")
     temperature = config.get("temperature", 0.7)
@@ -235,7 +233,7 @@ def generate_with_transformers(prompt: str, config: Dict[str, Any], model_cache:
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
-            max_new_tokens=150,
+            max_new_tokens=250,  # Increased to prevent truncation
             temperature=temperature,
             do_sample=True,
             top_p=0.9,
