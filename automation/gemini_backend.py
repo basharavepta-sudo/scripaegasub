@@ -106,6 +106,7 @@ def generate_prompt(data: Dict[str, Any]) -> str:
         "Return ONLY a raw JSON array of 3 strings, like this:",
         '["Вариант 1", "Вариант 2", "Вариант 3"]',
         "",
+        "IMPORTANT: If you use \\N for line breaks, escape it as \\\\N in the JSON string.",
         "Do NOT include any markdown formatting, explanations, or code blocks.",
         "Just the raw JSON array."
     ])
@@ -137,6 +138,12 @@ def parse_variants(response_text: str) -> List[str]:
 
     if not text:
         return ["[Пустой ответ от AI]"]
+
+    # Pre-process text to fix common JSON escaping issues with \N
+    # Many models output \N directly instead of \\N inside JSON strings
+    # We replace \N with \\N, but only if it's not already escaped
+    import re
+    text = re.sub(r'(?<!\\)\\N', r'\\\\N', text)
 
     try:
         parsed = json.loads(text)

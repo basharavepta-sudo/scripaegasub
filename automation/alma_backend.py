@@ -264,10 +264,12 @@ def parse_variants(response_text: str, num_variants: int = 3, original_ru: str =
         # Remove any remaining ** markers
         cleaned = cleaned.replace('**', '')
 
-        # Clean up Aegisub line break commands that might interfere
-        # Replace \N with space, preserve the text
-        cleaned = cleaned.replace('\\N', ' ').replace('\\n', ' ')
+        # Preserve \N line breaks, but clean up other whitespace
+        # Ensure we don't accidentally join lines that are separated by \N
+        # We temporarily replace \N with a placeholder
+        cleaned = cleaned.replace('\\N', '###LINEBREAK###')
         cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        cleaned = cleaned.replace('###LINEBREAK###', '\\N')
 
         # Must contain Cyrillic and be substantial
         if cleaned and len(cleaned) > 2:
@@ -280,12 +282,14 @@ def parse_variants(response_text: str, num_variants: int = 3, original_ru: str =
         bold_matches = re.findall(r'\*\*([^*]+)\*\*', response_text)
         for match in bold_matches:
             if re.search(r'[а-яА-ЯёЁ]', match):
-                cleaned = match.replace('\\N', ' ').replace('\\n', ' ')
+                cleaned = match.replace('\\N', '###LINEBREAK###')
                 cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+                cleaned = cleaned.replace('###LINEBREAK###', '\\N')
                 variants.append(cleaned)
 
         if not variants:
-            russian_match = re.search(r'[а-яА-ЯёЁ][а-яА-ЯёЁ\s\.\,\!\?\-\'\"]*[а-яА-ЯёЁ]', response_text)
+            # More complex regex to catch Russian text that might include \N
+            russian_match = re.search(r'[а-яА-ЯёЁ][а-яА-ЯёЁ\s\.\,\!\?\-\'\"\\\w]*[а-яА-ЯёЁ]', response_text)
             if russian_match:
                 variants.append(russian_match.group().strip())
 
@@ -294,8 +298,10 @@ def parse_variants(response_text: str, num_variants: int = 3, original_ru: str =
         if original_ru:
             variants = [original_ru]
         elif response_text.strip():
-            cleaned = response_text.strip().replace('\\N', ' ').replace('\\n', ' ')
-            variants = [re.sub(r'\s+', ' ', cleaned).strip()]
+            cleaned = response_text.strip().replace('\\N', '###LINEBREAK###')
+            cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+            cleaned = cleaned.replace('###LINEBREAK###', '\\N')
+            variants = [cleaned]
         else:
             variants = ["[Не удалось получить перевод]"]
 
