@@ -80,16 +80,6 @@ def generate_prompt(data: Dict[str, Any]) -> str:
     prompt_parts.append("============================")
     prompt_parts.append("")
 
-    # Context after
-    if context_after:
-        prompt_parts.append("Context (lines after):")
-        for item in context_after:
-            ru_text = item.get('ru', '') or '[empty]'
-            en_text = item.get('en', '') or '[no source]'
-            prompt_parts.append(f"- RU: {ru_text}")
-            prompt_parts.append(f"  EN: {en_text}")
-        prompt_parts.append("")
-
     # User feedback
     if feedback:
         prompt_parts.append(f"User Feedback/Instruction: {feedback}")
@@ -104,6 +94,7 @@ def generate_prompt(data: Dict[str, Any]) -> str:
         "- Context from surrounding lines",
         "- Accuracy to the English source (if provided)",
         "- IMPORTANT: Preserve subtitle formatting tags like \\N (newline) if they are present or needed.",
+        "- Use \\N for line breaks within the subtitle. DO NOT split the response into multiple physical lines.",
         "",
         "Return ONLY a raw JSON array of 3 strings, like this:",
         '["Вариант 1", "Вариант 2", "Вариант 3"]',
@@ -118,29 +109,26 @@ def generate_prompt(data: Dict[str, Any]) -> str:
 def clean_response_text(text: str) -> str:
     """Clean up response text, removing markdown formatting."""
     text = text.strip()
-
-    # Remove markdown code blocks
     if text.startswith("```"):
         lines = text.splitlines()
-        # Remove first line (```json or ```)
         if lines and lines[0].startswith("```"):
             lines = lines[1:]
-        # Remove last line if it's ```
         if lines and lines[-1].strip() == "```":
             lines = lines[:-1]
         text = "\n".join(lines).strip()
-
     return text
 
 
 def parse_variants(response_text: str) -> List[str]:
     """Parse variants from response text."""
     text = clean_response_text(response_text)
-
     if not text:
         return ["[Пустой ответ от AI]"]
 
-    # Try to find JSON array using regex if the response is chatty
+    variants = []
+
+    # 1. Try to find JSON array using regex
+    # Support both [ ... ] and simple list structure
     json_match = re.search(r'\[.*\]', text, re.DOTALL)
     if json_match:
         try:
@@ -151,49 +139,87 @@ def parse_variants(response_text: str) -> List[str]:
         except json.JSONDecodeError:
             pass
 
+    # 2. Try straight JSON load
     try:
         parsed = json.loads(text)
-
-        # Handle different response formats
         if isinstance(parsed, list):
             variants = parsed
         elif isinstance(parsed, dict):
-            # Try common keys
             for key in ["variants", "translations", "options", "results"]:
                 if key in parsed and isinstance(parsed[key], list):
                     variants = parsed[key]
                     break
             else:
-                # Use string representation as fallback
                 variants = [str(parsed)]
         else:
             variants = [str(parsed)]
-
-        # Ensure all variants are strings
         variants = [str(v) for v in variants if v is not None]
-
-        # Ensure we have at least one variant
-        if not variants:
-            variants = [text]
-
-        return variants
-
-    except json.JSONDecodeError:
-        # Not valid JSON
-        # Try to parse numbered list format
-        lines = text.splitlines()
-        variants = []
-        for line in lines:
-            # Matches "1. Text", "1) Text", "- Text"
-            match = re.match(r'^[\d\-]+[\.\)\:]\s*(.+)$', line.strip())
-            if match:
-                variants.append(match.group(1))
-
         if variants:
             return variants
+    except json.JSONDecodeError:
+        pass
 
-        logger.warning("Response is not valid JSON, using as single variant")
-        return [text]
+    # 3. Fallback: Parse numbered list
+    lines = text.splitlines()
+    current_variant = []
+
+    for line in lines:
+        line = line.strip()
+        if not line: continue
+
+        # Check start of new variant (1. or 1) or -)
+        match = re.match(r'^[\d\-]+[\.\)\:]\s*(.+)$', line)
+        if match:
+            if current_variant:
+                variants.append(" ".join(current_variant))
+                current_variant = []
+
+            content = match.group(1).strip()
+            # Clean up **bold** if present
+            bold_match = re.search(r'\*\*(.+?)\*\*', content)
+            if bold_match:
+                content = bold_match.group(1)
+            content = content.replace('**', '')
+
+            current_variant.append(content)
+        else:
+            # Continuation?
+            if current_variant:
+                # heuristic: if line looks like "Hope this helps" or "Note:", ignore
+                if re.match(r'^(Hope|Note|Here|Please|Regards|Best)', line, re.IGNORECASE):
+                    continue
+                current_variant.append(line)
+            else:
+                # Loose line, check if cyrillic
+                if re.search(r'[а-яА-ЯёЁ]', line):
+                    # Clean up **bold** if present
+                    bold_match = re.search(r'\*\*(.+?)\*\*', line)
+                    if bold_match:
+                        line = bold_match.group(1)
+                    line = line.replace('**', '')
+                    variants.append(line)
+
+    if current_variant:
+        variants.append(" ".join(current_variant))
+
+    # Deduplicate and limit
+    seen = set()
+    unique = []
+    for v in variants:
+        v = re.sub(r'\s+', ' ', v).strip()
+        if v and v not in seen:
+            seen.add(v)
+            unique.append(v)
+            if len(unique) >= 3: # Assuming 3 for now, logic duplicated from alma
+                break
+
+    if unique:
+        return unique
+
+    # Fallback if nothing parsed
+    if response_text.strip():
+        return [response_text.strip()]
+    return ["[Не удалось разобрать ответ AI]"]
 
 
 def main():
