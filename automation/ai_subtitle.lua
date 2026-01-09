@@ -1,13 +1,13 @@
 script_name = "AI Subtitle Assistant"
 script_description = "AI-powered subtitle editing with Gemini"
 script_author = "AI Assistant"
-script_version = "1.0"
+script_version = "1.1"
 
 -- Настройка путей для модулей
 -- Получаем путь к текущему скрипту, чтобы найти соседние файлы
 local script_path = debug.getinfo(1).source:match("@?(.*[\\/])")
 if not script_path then
-    -- Fallback если не удалось определить путь (редко)
+    -- Fallback если не удалось определить путь
     script_path = aegisub.decode_path("?user/automation/autoload/")
 end
 
@@ -24,6 +24,29 @@ local response_file = temp_dir .. separator .. "aegisub_ai_response.json"
 -- Пути к скриптам и конфигам
 local python_script = script_path .. "gemini_backend.py"
 local config_file = script_path .. "config.json"
+
+-- Определение команды Python (python3 на Linux/Mac, python на Windows)
+local function get_python_cmd()
+    if separator == "/" then
+        -- Unix-like система (Linux, Mac)
+        -- Проверяем наличие python3
+        local handle = io.popen("which python3 2>/dev/null")
+        if handle then
+            local result = handle:read("*a")
+            handle:close()
+            if result and result ~= "" then
+                return "python3"
+            end
+        end
+        -- Fallback на python
+        return "python"
+    else
+        -- Windows
+        return "python"
+    end
+end
+
+local python_executable = get_python_cmd()
 
 -- Парсинг SRT файла (для исходника)
 function parse_srt_file(filepath)
@@ -69,74 +92,147 @@ function parse_srt_file(filepath)
     return blocks
 end
 
+-- Безопасная запись JSON в файл
+local function write_json_file(filepath, data)
+    local file, err = io.open(filepath, "w")
+    if not file then
+        return false, "Cannot write to file: " .. (err or "unknown error")
+    end
+
+    local success, encoded = pcall(json.encode, data)
+    if not success then
+        file:close()
+        return false, "JSON encode error: " .. tostring(encoded)
+    end
+
+    file:write(encoded)
+    file:close()
+    return true
+end
+
+-- Безопасное чтение JSON из файла
+local function read_json_file(filepath)
+    local file = io.open(filepath, "r")
+    if not file then
+        return nil, "Cannot open file"
+    end
+
+    local content = file:read("*all")
+    file:close()
+
+    if not content or content == "" then
+        return nil, "File is empty"
+    end
+
+    local success, decoded = pcall(json.decode, content)
+    if not success then
+        return nil, "JSON decode error: " .. tostring(decoded)
+    end
+
+    return decoded
+end
+
+-- Выполнение Python скрипта
+local function run_python_backend()
+    local cmd = python_executable .. ' "' .. python_script .. '" "' .. request_file .. '" "' .. response_file .. '" "' .. config_file .. '"'
+
+    -- Добавляем перенаправление stderr для отладки
+    if separator == "/" then
+        cmd = cmd .. " 2>&1"
+    end
+
+    local exit_code = os.execute(cmd)
+
+    -- os.execute возвращает разные значения в разных версиях Lua
+    -- В Lua 5.1: возвращает код выхода напрямую
+    -- В Lua 5.2+: возвращает true/nil, тип завершения, код
+    if type(exit_code) == "boolean" then
+        return exit_code
+    elseif type(exit_code) == "number" then
+        return exit_code == 0
+    end
+
+    return exit_code ~= nil
+end
+
 -- Главная функция
 function show_ai_dialog(subs, sel, active)
     -- Получаем активную строку
     local line = subs[active]
     local line_index = active
 
-    -- Находим source файл (если нужно)
-    local source_blocks = nil
-    local video_filename = aegisub.project_properties().video_file
+    -- Проверяем что это диалоговая строка
+    if line.class ~= "dialogue" then
+        aegisub.dialog.display({{class="label", label="Ошибка: выберите строку диалога (не комментарий/стиль)."}}, {"OK"})
+        return
+    end
 
     -- Диалог настроек
-    local config = {
+    local config_dialog = {
         {class="label", label="Контекст (строк до/после):", x=0, y=0},
         {class="intedit", name="context", value=2, min=0, max=10, x=1, y=0},
-        {class="checkbox", name="use_source", label="Использовать английский исходник (из папки скрипта)", value=false, x=0, y=1}
+        {class="checkbox", name="use_source", label="Использовать английский исходник (из папки скрипта)", value=false, x=0, y=1, width=2}
     }
 
-    local button, results = aegisub.dialog.display(config, {"OK", "Отмена"})
+    local button, results = aegisub.dialog.display(config_dialog, {"OK", "Отмена"})
     if button == "Отмена" then return end
 
     local context_size = results.context
     local use_source = results.use_source
 
-    -- Парсим source файл
+    -- Парсим source файл если нужно
+    local source_blocks = nil
     if use_source then
         local sub_path = aegisub.decode_path("?script")
-        local sub_name = aegisub.file_name():match("(.+)%..+$")
-        if not sub_name then
-             -- Если файл еще не сохранен, попробуем без имени или предупредим
-             sub_name = "unknown"
-        end
-        local source_file = sub_path .. separator .. sub_name .. ".txt"
+        local sub_name = aegisub.file_name()
 
-        -- Если не нашли .txt, попробуем поискать .srt с суффиксом _en или подобное, но пока оставим как в оригинале
-        local test_file = io.open(source_file, "r")
-        if not test_file then
-            -- Попробуем .srt
-            source_file = sub_path .. separator .. sub_name .. ".srt"
-            test_file = io.open(source_file, "r")
-        end
-
-        if test_file then
-            test_file:close()
-            source_blocks = parse_srt_file(source_file)
+        if sub_name then
+            sub_name = sub_name:match("(.+)%..+$") or sub_name
         else
-            aegisub.log("Внимание: Исходный файл не найден (" .. source_file .. ")\n")
+            sub_name = "unknown"
+        end
+
+        -- Пробуем разные варианты исходного файла
+        local source_extensions = {".txt", ".srt", "_en.txt", "_en.srt", "_eng.txt", "_eng.srt"}
+        local source_file = nil
+
+        for _, ext in ipairs(source_extensions) do
+            local try_path = sub_path .. separator .. sub_name .. ext
+            local test_file = io.open(try_path, "r")
+            if test_file then
+                test_file:close()
+                source_file = try_path
+                break
+            end
+        end
+
+        if source_file then
+            source_blocks = parse_srt_file(source_file)
+            if not source_blocks then
+                aegisub.log("Внимание: Не удалось прочитать исходный файл\n")
+            end
+        else
+            aegisub.log("Внимание: Исходный файл не найден в папке скрипта\n")
         end
     end
 
     -- Собираем маппинг индексов строк Aegisub на номера диалогов
-    -- Это нужно, так как source_blocks индексируются по порядку (1, 2, 3...)
-    -- а subs[] содержит заголовки, стили и т.д.
     local line_id_map = {}
     local dialogue_count = 0
-
-    -- Проходим по всем строкам один раз чтобы построить карту (или можно локально)
-    -- Для оптимизации, можно считать только вокруг активной строки, но безопаснее посчитать всё до конца контекста.
-    -- Однако, доступ ко всем строкам может быть медленным на огромных скриптах.
-    -- Но API Aegisub subs[i] достаточно быстр.
-
-    -- Простая стратегия: считаем диалоги от начала файла до max(active + context).
-    local scan_limit = math.min(#subs, line_index + context_size + 100) -- +100 про запас
+    local scan_limit = math.min(#subs, line_index + context_size + 100)
 
     for i = 1, scan_limit do
         if subs[i].class == "dialogue" then
             dialogue_count = dialogue_count + 1
             line_id_map[i] = dialogue_count
         end
+    end
+
+    -- Проверяем что текущая строка есть в маппинге
+    local current_d_idx = line_id_map[line_index]
+    if not current_d_idx then
+        aegisub.dialog.display({{class="label", label="Ошибка: не удалось определить номер строки."}}, {"OK"})
+        return
     end
 
     -- Собираем контекст
@@ -149,7 +245,7 @@ function show_ai_dialog(subs, sel, active)
             local d_idx = line_id_map[i]
             table.insert(context_before, {
                 ru = ctx_line.text,
-                en = source_blocks and source_blocks[d_idx] or ""
+                en = source_blocks and d_idx and source_blocks[d_idx] or ""
             })
         end
     end
@@ -160,13 +256,12 @@ function show_ai_dialog(subs, sel, active)
             local d_idx = line_id_map[i]
             table.insert(context_after, {
                 ru = ctx_line.text,
-                en = source_blocks and source_blocks[d_idx] or ""
+                en = source_blocks and d_idx and source_blocks[d_idx] or ""
             })
         end
     end
 
     -- Формируем запрос
-    local current_d_idx = line_id_map[line_index]
     local request_data = {
         current_line = {
             ru = line.text,
@@ -178,47 +273,36 @@ function show_ai_dialog(subs, sel, active)
         feedback = ""
     }
 
-    -- Сохраняем JSON
-    local req_file = io.open(request_file, "w")
-    req_file:write(json.encode(request_data))
-    req_file:close()
-
-    -- Запускаем Python
-    -- Используем python3 если доступен, иначе python.
-    -- В Windows обычно python, в Linux python3.
-    -- Можно попробовать определить, но пока оставим python
-
-    local python_cmd = 'python "' .. python_script .. '" "' .. request_file .. '" "' .. response_file .. '" "' .. config_file .. '"'
-
-    aegisub.progress.task("AI думает...")
-    -- Aegisub блокируется во время os.execute.
-    -- Можно запустить через & (Linux) или start (Windows) но тогда сложно ждать завершения.
-    -- Пока используем синхронный вызов.
-    local ret = os.execute(python_cmd)
-
-    -- Читаем ответ
-    local resp_file = io.open(response_file, "r")
-    if not resp_file then
-        aegisub.dialog.display({{class="label", label="Ошибка: нет ответа от AI. Проверьте консоль или пути."}}, {"OK"})
+    -- Сохраняем JSON запрос
+    local success, err = write_json_file(request_file, request_data)
+    if not success then
+        aegisub.dialog.display({{class="label", label="Ошибка записи запроса: " .. err}}, {"OK"})
         return
     end
 
-    local response_text = resp_file:read("*all")
-    resp_file:close()
+    -- Запускаем Python
+    aegisub.progress.task("AI думает...")
+    local python_success = run_python_backend()
 
-    if response_text == "" then
-         aegisub.dialog.display({{class="label", label="Ошибка: пустой ответ от AI."}}, {"OK"})
-         return
+    if not python_success then
+        aegisub.dialog.display({{class="label", label="Ошибка: Python скрипт завершился с ошибкой.\nПроверьте установку Python и зависимостей."}}, {"OK"})
+        return
     end
 
-    local status, response = pcall(json.decode, response_text)
-    if not status then
-         aegisub.dialog.display({{class="label", label="Ошибка парсинга JSON: " .. response}}, {"OK"})
-         return
+    -- Читаем ответ
+    local response, read_err = read_json_file(response_file)
+    if not response then
+        aegisub.dialog.display({{class="label", label="Ошибка чтения ответа: " .. (read_err or "неизвестная ошибка")}}, {"OK"})
+        return
     end
 
     if response.error then
         aegisub.dialog.display({{class="label", label="Ошибка AI: " .. response.error}}, {"OK"})
+        return
+    end
+
+    if not response.variants or #response.variants == 0 then
+        aegisub.dialog.display({{class="label", label="Ошибка: AI не вернул вариантов."}}, {"OK"})
         return
     end
 
@@ -228,126 +312,87 @@ end
 
 -- Диалог выбора варианта
 function show_result_dialog(subs, active, line, variants, request_data, source_blocks)
-    local config = {
-        {class="label", label="Оригинал (RU): " .. line.text, x=0, y=0, width=3},
-        {class="label", label="Оригинал (EN): " .. (request_data.current_line.en or ""), x=0, y=1, width=3},
-        {class="label", label="", x=0, y=2},
-        {class="label", label="Выберите вариант:", x=0, y=3, width=3},
-    }
-
-    local buttons = {"Применить", "Retry", "Отмена"}
-
-    -- Динамически создаем radio buttons или просто отображаем варианты,
-    -- но так как display ограничен, используем textbox для редактирования выбранного.
-    -- Чтобы пользователь мог выбрать, добавим dropdown или просто покажем текст
-    -- и позволим скопировать в поле редактирования.
-
-    -- Удобнее всего dropdown
-    local dropdown_items = {}
-    for i, variant in ipairs(variants) do
-        table.insert(dropdown_items, variant)
+    -- Обрезаем длинный текст для label
+    local function truncate(text, max_len)
+        max_len = max_len or 80
+        if #text > max_len then
+            return text:sub(1, max_len) .. "..."
+        end
+        return text
     end
 
-    table.insert(config, {class="dropdown", name="selected_variant", items=dropdown_items, value=dropdown_items[1], x=0, y=4, width=3})
+    local original_ru = line.text
+    local original_en = request_data.current_line.en or ""
 
-    table.insert(config, {class="label", label="", x=0, y=5})
-    table.insert(config, {class="label", label="Редактировать:", x=0, y=6})
-    table.insert(config, {class="textbox", name="edited", value=dropdown_items[1], x=0, y=7, width=3, height=4})
+    local config_dialog = {
+        {class="label", label="Оригинал (RU): " .. truncate(original_ru), x=0, y=0, width=3},
+        {class="label", label="Оригинал (EN): " .. truncate(original_en), x=0, y=1, width=3},
+        {class="label", label="", x=0, y=2},
+        {class="label", label="Выберите вариант:", x=0, y=3},
+    }
 
-    -- При выборе в dropdown значение в textbox не обновится автоматически в реальном времени в старых версиях диалогов Aegisub,
-    -- но мы можем попробовать. (Обычно нет).
-    -- Поэтому просто предложим выбрать.
+    -- Создаем dropdown с вариантами
+    local dropdown_items = {}
+    for i, variant in ipairs(variants) do
+        table.insert(dropdown_items, tostring(i) .. ". " .. variant)
+    end
 
-    local button, results = aegisub.dialog.display(config, buttons)
+    table.insert(config_dialog, {class="dropdown", name="selected_variant", items=dropdown_items, value=dropdown_items[1], x=0, y=4, width=3})
+    table.insert(config_dialog, {class="label", label="", x=0, y=5})
+    table.insert(config_dialog, {class="label", label="Или отредактируйте вручную:", x=0, y=6})
+    table.insert(config_dialog, {class="textbox", name="edited", value=variants[1], x=0, y=7, width=3, height=4})
+
+    local buttons = {"Применить", "Retry", "Отмена"}
+    local button, results = aegisub.dialog.display(config_dialog, buttons)
 
     if button == "Отмена" then
         return
     elseif button == "Retry" then
         -- Запрашиваем фидбек
-        local feedback_config = {
-            {class="label", label="Что не нравится? (например: 'сделай короче', 'более разговорно')", x=0, y=0},
+        local feedback_dialog = {
+            {class="label", label="Что не нравится? (например: 'сделай короче', 'более разговорно')", x=0, y=0, width=3},
             {class="textbox", name="feedback", value="", width=3, height=2, x=0, y=1}
         }
-        local fb_button, fb_results = aegisub.dialog.display(feedback_config, {"Отправить", "Отмена"})
+        local fb_button, fb_results = aegisub.dialog.display(feedback_dialog, {"Отправить", "Отмена"})
 
-        if fb_button == "Отправить" then
+        if fb_button == "Отправить" and fb_results.feedback ~= "" then
             request_data.feedback = fb_results.feedback
 
             -- Повторный запрос
-            local req_file = io.open(request_file, "w")
-            req_file:write(json.encode(request_data))
-            req_file:close()
+            local success, err = write_json_file(request_file, request_data)
+            if not success then
+                aegisub.dialog.display({{class="label", label="Ошибка записи: " .. err}}, {"OK"})
+                return
+            end
 
-            local python_cmd = 'python "' .. python_script .. '" "' .. request_file .. '" "' .. response_file .. '" "' .. config_file .. '"'
             aegisub.progress.task("AI думает снова...")
-            os.execute(python_cmd)
+            local python_success = run_python_backend()
 
-            local resp_file = io.open(response_file, "r")
-            if resp_file then
-                local response_text = resp_file:read("*all")
-                resp_file:close()
-                local status, new_response = pcall(json.decode, response_text)
-                if status and not new_response.error then
-                     show_result_dialog(subs, active, line, new_response.variants, request_data, source_blocks)
-                else
-                     aegisub.dialog.display({{class="label", label="Ошибка при повторе."}}, {"OK"})
-                end
+            if not python_success then
+                aegisub.dialog.display({{class="label", label="Ошибка при повторном запросе."}}, {"OK"})
+                return
+            end
+
+            local new_response, read_err = read_json_file(response_file)
+            if new_response and not new_response.error and new_response.variants then
+                show_result_dialog(subs, active, line, new_response.variants, request_data, source_blocks)
+            else
+                aegisub.dialog.display({{class="label", label="Ошибка при повторе: " .. (new_response and new_response.error or read_err or "неизвестная ошибка")}}, {"OK"})
             end
         end
         return
     else
         -- Применяем вариант
-        -- Если пользователь редактировал текстбокс, берем его.
-        -- Проблема: если он выбрал в dropdown другое значение, но не обновил текстбокс?
-        -- Aegisub dialog API limitation.
-        -- Давайте доверимся text box. Но начальное значение textbox было первым вариантом.
-
-        -- Лучше просто список кнопок "Вариант 1", "Вариант 2"? Нет, их может быть много текста.
-
-        -- В текущей реализации: берем results.edited.
-        -- Если пользователь хочет другой вариант, он должен скопировать его (неудобно) или мы должны сделать цикл диалога.
-
-        -- Улучшение: Добавим кнопку "Выбрать из списка" которая обновит текстбокс? Нет, нельзя обновить диалог без закрытия.
-
-        -- Давайте просто покажем диалог еще раз если выбран dropdown отличается от текста? Нет.
-
-        -- Сделаем проще: "Вариант 1", "Вариант 2", "Вариант 3" как кнопки?
-        -- Текст может быть длинным.
-
-        -- Оставим dropdown и textbox. Но предупредим, что редактируется только textbox.
-        -- Чтобы выбрать другой вариант для редактирования, пользователю придется перезапустить макрос? Нет.
-
-        -- Попробуем цикл: если выбрано в dropdown что-то отличное от того что было при открытии, переоткрываем диалог с новым value в textbox.
-        -- Это работает в Aegisub!
-
-        if results.selected_variant ~= variants[1] and results.edited == variants[1] then
-             -- Пользователь сменил dropdown, но не трогал textbox (он равен дефолту).
-             -- Переоткроем диалог с новым дефолтом.
-             -- (Надо найти индекс варианта)
-             local new_variants = {}
-             -- Переупорядочим так чтобы выбранный был первым?
-             table.insert(new_variants, results.selected_variant)
-             for _, v in ipairs(variants) do
-                 if v ~= results.selected_variant then
-                     table.insert(new_variants, v)
-                 end
-             end
-             show_result_dialog(subs, active, line, new_variants, request_data, source_blocks)
-             return
-        end
-
         local final_text = results.edited
-        -- Если пользователь выбрал в dropdown другое и отредактировал textbox, мы берем textbox.
-        -- Но если он просто выбрал dropdown?
-        -- Сложная эвристика.
 
-        -- Давайте просто проверим: если results.edited == variants[1] (исходное значение) И results.selected_variant != variants[1],
-        -- значит он хотел выбрать другой.
-
-        -- НО: он мог отредактировать variants[1] так что оно совпало с variants[1]? Нет.
-
-        if results.edited == variants[1] and results.selected_variant ~= variants[1] then
-             final_text = results.selected_variant
+        -- Если текст не был отредактирован (равен первому варианту),
+        -- но выбран другой в dropdown - используем выбранный
+        if final_text == variants[1] then
+            -- Парсим номер выбранного варианта из dropdown
+            local selected_num = tonumber(results.selected_variant:match("^(%d+)%."))
+            if selected_num and selected_num > 1 and selected_num <= #variants then
+                final_text = variants[selected_num]
+            end
         end
 
         line.text = final_text
