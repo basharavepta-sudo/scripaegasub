@@ -4,19 +4,26 @@
   "model": "llama3",
   "temperature": 0.7,
   "retry_temperature": 0.9,
+  "max_tokens": 600,
 
   "num_variants": 3,
   "global_context": "",
   "default_instructions": "",
   "translation_style": "natural",
 
+  "enable_images": false,
+  "image_model": "sdxl",
+
   "notes": {
     "backend_options": "ollama (recommended) or transformers",
-    "ollama_models": "llama3, mistral, qwen2, gemma2",
+    "ollama_models": "llama3, mistral, qwen2, gemma2, gemma3",
     "num_variants": "1-5 variants per request",
+    "max_tokens": "Max tokens for response (300-1000)",
     "global_context": "Persistent context for all translations (e.g. 'This is a comedy movie')",
     "default_instructions": "Default instructions (e.g. 'keep it short and casual')",
     "translation_style": "natural, formal, casual, literal",
-    "ollama_install": "https://ollama.ai - then: ollama pull llama3"
+    "ollama_install": "https://ollama.ai - then: ollama pull llama3",
+    "enable_images": "Generate scene images via AI",
+    "image_model": "sdxl, sd3, flux - requires ComfyUI or Automatic1111"
   }
 }

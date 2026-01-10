@@ -10,36 +10,61 @@ import os
 import sys
 import logging
 import re
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 
-# Setup logging
+# Setup logging - reduce verbosity for faster startup
 logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
+    level=logging.WARNING,
+    format='%(levelname)s: %(message)s',
     stream=sys.stderr
 )
 logger = logging.getLogger(__name__)
 
-# Try importing requests (for Ollama API)
+# Lazy imports for faster startup
 requests = None
 REQUESTS_ERROR = None
-
-try:
-    import requests
-except ImportError as e:
-    REQUESTS_ERROR = str(e)
-
-# Try importing transformers (optional, for local model)
 transformers = None
 torch = None
 TRANSFORMERS_ERROR = None
 
-try:
-    import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-    transformers = True
-except ImportError as e:
-    TRANSFORMERS_ERROR = str(e)
+def ensure_requests():
+    """Lazy load requests module."""
+    global requests, REQUESTS_ERROR
+    if requests is not None:
+        return True
+    try:
+        import requests as req_module
+        requests = req_module
+        return True
+    except ImportError as e:
+        REQUESTS_ERROR = str(e)
+        return False
+
+def ensure_transformers():
+    """Lazy load transformers/torch modules."""
+    global transformers, torch, TRANSFORMERS_ERROR
+    if transformers is not None:
+        return True
+    try:
+        import torch as torch_module
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+        torch = torch_module
+        transformers = True
+        return True
+    except ImportError as e:
+        TRANSFORMERS_ERROR = str(e)
+        return False
+
+
+def check_ollama_status(ollama_url: str = "http://localhost:11434") -> bool:
+    """Quick check if Ollama is running."""
+    if not ensure_requests():
+        return False
+    try:
+        resp = requests.get(f"{ollama_url}/api/tags", timeout=2)
+        return resp.status_code == 200
+    except Exception:
+        return False
 
 
 def load_config(config_path: str) -> Dict[str, Any]:
@@ -163,7 +188,7 @@ def generate_batch_prompt(lines_data: List[Dict], config: Dict[str, Any]) -> str
 
 def generate_with_ollama(prompt: str, config: Dict[str, Any]) -> str:
     """Generate response using Ollama API."""
-    if requests is None:
+    if not ensure_requests():
         raise ImportError(f"requests not installed: pip install requests. Error: {REQUESTS_ERROR}")
 
     ollama_url = config.get("ollama_url", "http://localhost:11434")
@@ -172,13 +197,16 @@ def generate_with_ollama(prompt: str, config: Dict[str, Any]) -> str:
 
     api_url = f"{ollama_url}/api/generate"
 
+    # Получаем max_tokens из конфига или используем значение по умолчанию
+    max_tokens = config.get("max_tokens", 600)
+
     payload = {
         "model": model,
         "prompt": prompt,
         "stream": False,
         "options": {
             "temperature": temperature,
-            "num_predict": 300,  # Reduced for speed
+            "num_predict": max_tokens,  # Configurable token limit
             "top_p": 0.9,
             "repeat_penalty": 1.1
         }
@@ -199,9 +227,12 @@ def generate_with_ollama(prompt: str, config: Dict[str, Any]) -> str:
         raise RuntimeError(f"Ошибка Ollama: {e}")
 
 
-def generate_with_transformers(prompt: str, config: Dict[str, Any], model_cache: Dict = {}) -> str:
+def generate_with_transformers(prompt: str, config: Dict[str, Any], model_cache: Optional[Dict] = None) -> str:
     """Generate response using local transformers model."""
-    if not transformers:
+    if model_cache is None:
+        model_cache = {}
+
+    if not ensure_transformers():
         raise ImportError(f"transformers/torch not installed. Error: {TRANSFORMERS_ERROR}")
 
     model_name = config.get("model", "haoranxu/ALMA-13B-R")
@@ -224,10 +255,12 @@ def generate_with_transformers(prompt: str, config: Dict[str, Any], model_cache:
 
     inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
 
+    max_tokens = config.get("max_tokens", 600)
+
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
-            max_new_tokens=150,
+            max_new_tokens=max_tokens,
             temperature=temperature,
             do_sample=True,
             top_p=0.9,
@@ -343,6 +376,157 @@ def parse_batch_variants(response_text: str, num_lines: int, num_variants: int =
     return results
 
 
+def generate_scene_description(text: str, context: str, config: Dict[str, Any]) -> str:
+    """Generate a visual scene description for image generation."""
+    prompt = f"""Based on this subtitle dialogue, create a brief visual scene description for an image generator.
+Dialogue: "{text}"
+Context: {context if context else 'Movie/TV show scene'}
+
+Describe the scene in 1-2 sentences in English, focusing on:
+- Setting/environment
+- Character actions/emotions
+- Lighting/mood
+
+Keep it concise and visual. Output ONLY the scene description, nothing else."""
+
+    try:
+        if config.get("backend") == "ollama":
+            return generate_with_ollama(prompt, {**config, "max_tokens": 150})
+        else:
+            return generate_with_transformers(prompt, {**config, "max_tokens": 150})
+    except Exception as e:
+        logger.error(f"Scene description error: {e}")
+        return f"Scene from dialogue: {text[:50]}"
+
+
+def generate_image(scene_description: str, config: Dict[str, Any]) -> Optional[str]:
+    """
+    Generate an image based on scene description.
+    Returns path to generated image or None.
+
+    Supports:
+    - ComfyUI API (localhost:8188)
+    - Automatic1111 API (localhost:7860)
+    - Ollama with multimodal models (experimental)
+    """
+    if not ensure_requests():
+        logger.error("requests module required for image generation")
+        return None
+
+    image_model = config.get("image_model", "sdxl")
+
+    # Try ComfyUI first
+    comfyui_url = config.get("comfyui_url", "http://localhost:8188")
+    try:
+        # Simple ComfyUI API workflow
+        workflow = {
+            "prompt": {
+                "3": {
+                    "class_type": "KSampler",
+                    "inputs": {
+                        "seed": -1,
+                        "steps": 20,
+                        "cfg": 7,
+                        "sampler_name": "euler",
+                        "scheduler": "normal",
+                        "denoise": 1,
+                        "model": ["4", 0],
+                        "positive": ["6", 0],
+                        "negative": ["7", 0],
+                        "latent_image": ["5", 0]
+                    }
+                },
+                "4": {
+                    "class_type": "CheckpointLoaderSimple",
+                    "inputs": {"ckpt_name": f"{image_model}.safetensors"}
+                },
+                "5": {
+                    "class_type": "EmptyLatentImage",
+                    "inputs": {"width": 512, "height": 512, "batch_size": 1}
+                },
+                "6": {
+                    "class_type": "CLIPTextEncode",
+                    "inputs": {
+                        "text": f"cinematic film still, {scene_description}, high quality, detailed",
+                        "clip": ["4", 1]
+                    }
+                },
+                "7": {
+                    "class_type": "CLIPTextEncode",
+                    "inputs": {
+                        "text": "low quality, blurry, text, watermark",
+                        "clip": ["4", 1]
+                    }
+                },
+                "8": {
+                    "class_type": "VAEDecode",
+                    "inputs": {"samples": ["3", 0], "vae": ["4", 2]}
+                },
+                "9": {
+                    "class_type": "SaveImage",
+                    "inputs": {"filename_prefix": "subtitle_scene", "images": ["8", 0]}
+                }
+            }
+        }
+
+        resp = requests.post(f"{comfyui_url}/prompt", json=workflow, timeout=120)
+        if resp.status_code == 200:
+            result = resp.json()
+            prompt_id = result.get("prompt_id")
+            if prompt_id:
+                # Wait for completion and get image
+                import time
+                for _ in range(60):  # Max 60 seconds
+                    time.sleep(1)
+                    history_resp = requests.get(f"{comfyui_url}/history/{prompt_id}")
+                    if history_resp.status_code == 200:
+                        history = history_resp.json()
+                        if prompt_id in history:
+                            outputs = history[prompt_id].get("outputs", {})
+                            if "9" in outputs and outputs["9"].get("images"):
+                                image_data = outputs["9"]["images"][0]
+                                filename = image_data.get("filename")
+                                subfolder = image_data.get("subfolder", "")
+                                return f"{comfyui_url}/view?filename={filename}&subfolder={subfolder}"
+                return None
+    except requests.exceptions.ConnectionError:
+        logger.info("ComfyUI not available, trying Automatic1111...")
+    except Exception as e:
+        logger.error(f"ComfyUI error: {e}")
+
+    # Try Automatic1111 API
+    a1111_url = config.get("a1111_url", "http://localhost:7860")
+    try:
+        payload = {
+            "prompt": f"cinematic film still, {scene_description}, high quality, detailed",
+            "negative_prompt": "low quality, blurry, text, watermark",
+            "steps": 20,
+            "width": 512,
+            "height": 512,
+            "cfg_scale": 7
+        }
+
+        resp = requests.post(f"{a1111_url}/sdapi/v1/txt2img", json=payload, timeout=120)
+        if resp.status_code == 200:
+            result = resp.json()
+            images = result.get("images", [])
+            if images:
+                # Save base64 image to temp file
+                import base64
+                import tempfile
+                image_data = base64.b64decode(images[0])
+                temp_path = os.path.join(tempfile.gettempdir(), "subtitle_scene.png")
+                with open(temp_path, "wb") as f:
+                    f.write(image_data)
+                return temp_path
+    except requests.exceptions.ConnectionError:
+        logger.info("Automatic1111 not available")
+    except Exception as e:
+        logger.error(f"Automatic1111 error: {e}")
+
+    return None
+
+
 def main():
     """Main entry point."""
     if len(sys.argv) < 3:
@@ -398,21 +582,34 @@ def main():
             # Single line mode
             current_line = request_data.get("current_line", {})
             original_ru = current_line.get("ru", "")
+            original_en = current_line.get("en", "")
 
             prompt = generate_translation_prompt(request_data, config)
-            logger.debug(f"Prompt: {prompt}")
 
             if backend_type == "ollama":
                 response_text = generate_with_ollama(prompt, config)
             else:
                 response_text = generate_with_transformers(prompt, config)
 
-            logger.info(f"Response: {len(response_text)} chars")
-
             variants = parse_variants(response_text, num_variants, original_ru)
-            logger.info(f"Parsed {len(variants)} variants")
 
             output_data = {"variants": variants}
+
+            # Generate image if enabled
+            if config.get("enable_images", False):
+                try:
+                    text_for_scene = original_en if original_en else original_ru
+                    global_context = config.get("global_context", "")
+
+                    scene_desc = generate_scene_description(text_for_scene, global_context, config)
+                    image_path = generate_image(scene_desc, config)
+
+                    if image_path:
+                        output_data["image_path"] = image_path
+                        output_data["scene_description"] = scene_desc
+                except Exception as e:
+                    logger.error(f"Image generation failed: {e}")
+                    output_data["image_error"] = str(e)
 
     except FileNotFoundError as e:
         logger.error(f"File not found: {e}")

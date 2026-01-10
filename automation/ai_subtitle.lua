@@ -98,55 +98,106 @@ end
 
 -- ============== UI Настроек проекта ==============
 
+local function load_backend_config()
+    return read_json_file(config_file) or {
+        backend = "ollama",
+        ollama_url = "http://localhost:11434",
+        model = "llama3",
+        temperature = 0.7,
+        max_tokens = 600,
+        enable_images = false,
+        image_model = "sdxl"
+    }
+end
+
 local function show_project_settings()
     local settings = load_settings()
+    local backend_config = load_backend_config()
 
     local style_items = {"natural", "formal", "casual", "literal"}
-    local style_labels = {
-        natural = "Естественный (разговорный)",
-        formal = "Формальный (официальный)",
-        casual = "Неформальный (сленг)",
-        literal = "Буквальный (близко к оригиналу)"
-    }
+    local backend_items = {"ollama", "transformers"}
+    local model_items = {"llama3", "llama3.1", "llama3.2", "mistral", "qwen2", "qwen2.5", "gemma2", "gemma3", "phi3"}
+    local image_model_items = {"sdxl", "sd3", "flux", "dall-e"}
 
     local dialog = {
-        {class="label", label="=== Настройки проекта ===", x=0, y=0, width=3},
+        -- Секция: Перевод
+        {class="label", label="═══ НАСТРОЙКИ ПЕРЕВОДА ═══", x=0, y=0, width=4},
 
-        {class="label", label="Глобальный контекст (описание фильма/сериала):", x=0, y=1, width=3},
-        {class="textbox", name="global_context", value=settings.global_context or "", x=0, y=2, width=3, height=3},
+        {class="label", label="Глобальный контекст:", x=0, y=1, width=2},
+        {class="textbox", name="global_context", value=settings.global_context or "", x=0, y=2, width=4, height=2},
 
-        {class="label", label="Инструкции по умолчанию (применяются ко всем переводам):", x=0, y=5, width=3},
-        {class="textbox", name="default_instructions", value=settings.default_instructions or "", x=0, y=6, width=3, height=2},
+        {class="label", label="Инструкции по умолчанию:", x=0, y=4, width=2},
+        {class="textbox", name="default_instructions", value=settings.default_instructions or "", x=0, y=5, width=4, height=2},
 
-        {class="label", label="Стиль перевода:", x=0, y=8},
-        {class="dropdown", name="style", items=style_items, value=settings.translation_style or "natural", x=1, y=8, width=2},
+        {class="label", label="Стиль:", x=0, y=7},
+        {class="dropdown", name="style", items=style_items, value=settings.translation_style or "natural", x=1, y=7, width=1},
 
-        {class="label", label="Кол-во вариантов (1-5):", x=0, y=9},
-        {class="intedit", name="num_variants", value=settings.num_variants or 3, min=1, max=5, x=1, y=9},
+        {class="label", label="Вариантов:", x=2, y=7},
+        {class="intedit", name="num_variants", value=settings.num_variants or 3, min=1, max=5, x=3, y=7},
 
-        {class="label", label="Строк контекста (0-5):", x=0, y=10},
-        {class="intedit", name="context_lines", value=settings.context_lines or 1, min=0, max=5, x=1, y=10},
+        {class="label", label="Строк контекста:", x=0, y=8},
+        {class="intedit", name="context_lines", value=settings.context_lines or 1, min=0, max=5, x=1, y=8},
 
-        {class="checkbox", name="use_source", label="Использовать английский исходник (.txt/.srt)", value=settings.use_source or false, x=0, y=11, width=3},
+        {class="checkbox", name="use_source", label="Использовать англ. исходник", value=settings.use_source or false, x=2, y=8, width=2},
 
-        {class="label", label="", x=0, y=12},
-        {class="label", label="Примеры контекста:", x=0, y=13, width=3},
-        {class="label", label="  'Это комедия про студентов'", x=0, y=14, width=3},
-        {class="label", label="  'Научная фантастика, формальный язык'", x=0, y=15, width=3},
+        -- Секция: Backend/AI
+        {class="label", label="═══ НАСТРОЙКИ AI ═══", x=0, y=9, width=4},
+
+        {class="label", label="Backend:", x=0, y=10},
+        {class="dropdown", name="backend", items=backend_items, value=backend_config.backend or "ollama", x=1, y=10},
+
+        {class="label", label="Модель:", x=2, y=10},
+        {class="dropdown", name="model", items=model_items, value=backend_config.model or "llama3", x=3, y=10},
+
+        {class="label", label="Ollama URL:", x=0, y=11},
+        {class="edit", name="ollama_url", value=backend_config.ollama_url or "http://localhost:11434", x=1, y=11, width=3},
+
+        {class="label", label="Temperature:", x=0, y=12},
+        {class="floatedit", name="temperature", value=backend_config.temperature or 0.7, min=0.0, max=2.0, step=0.1, x=1, y=12},
+
+        {class="label", label="Max tokens:", x=2, y=12},
+        {class="intedit", name="max_tokens", value=backend_config.max_tokens or 600, min=100, max=2000, x=3, y=12},
+
+        -- Секция: Изображения
+        {class="label", label="═══ ГЕНЕРАЦИЯ КАРТИНОК ═══", x=0, y=13, width=4},
+
+        {class="checkbox", name="enable_images", label="Генерировать картинки сцен", value=backend_config.enable_images or false, x=0, y=14, width=2},
+
+        {class="label", label="Image модель:", x=2, y=14},
+        {class="dropdown", name="image_model", items=image_model_items, value=backend_config.image_model or "sdxl", x=3, y=14},
     }
 
     local buttons = {"Сохранить", "Отмена"}
     local button, results = aegisub.dialog.display(dialog, buttons)
 
     if button == "Сохранить" then
+        -- Обновляем настройки сессии
         session_settings.global_context = results.global_context
         session_settings.default_instructions = results.default_instructions
         session_settings.translation_style = results.style
         session_settings.num_variants = results.num_variants
         session_settings.context_lines = results.context_lines
         session_settings.use_source = results.use_source
+
+        -- Сохраняем настройки сессии
         save_settings()
-        aegisub.log("Настройки сохранены!\n")
+
+        -- Обновляем config.json с настройками бэкенда
+        local config = read_json_file(config_file) or {}
+        config.backend = results.backend
+        config.model = results.model
+        config.ollama_url = results.ollama_url
+        config.temperature = results.temperature
+        config.max_tokens = results.max_tokens
+        config.enable_images = results.enable_images
+        config.image_model = results.image_model
+        config.global_context = results.global_context
+        config.default_instructions = results.default_instructions
+        config.translation_style = results.style
+        config.num_variants = results.num_variants
+        write_json_file(config_file, config)
+
+        aegisub.log("Все настройки сохранены!\n")
     end
 end
 
@@ -191,34 +242,58 @@ end
 
 -- ============== Запуск Python ==============
 
+local function delete_file(path)
+    os.remove(path)
+end
+
+local function get_file_timestamp()
+    return os.time()
+end
+
 local function run_python_backend()
+    -- ВАЖНО: удаляем старый response файл перед запуском!
+    -- Это исправляет баг когда повторный перевод возвращал старые данные
+    delete_file(response_file)
+
+    local timestamp_before = get_file_timestamp()
+
     local cmd
     if separator == "/" then
         -- Linux/Mac: просто запускаем
         cmd = python_executable .. ' "' .. python_script .. '" "' .. request_file .. '" "' .. response_file .. '" "' .. config_file .. '" 2>&1'
     else
-        -- Windows: используем start /b /wait чтобы скрыть окно CMD
-        -- Альтернативно используем pythonw если доступен
-        cmd = 'start /b /wait "" ' .. python_executable .. ' "' .. python_script .. '" "' .. request_file .. '" "' .. response_file .. '" "' .. config_file .. '"'
+        -- Windows: используем pythonw для скрытия окна CMD если доступен
+        -- Иначе используем start /b /wait
+        local pythonw_test = io.popen("where pythonw 2>nul")
+        local pythonw_path = pythonw_test and pythonw_test:read("*a") or ""
+        pythonw_test:close()
+
+        if pythonw_path and pythonw_path ~= "" then
+            cmd = 'pythonw "' .. python_script .. '" "' .. request_file .. '" "' .. response_file .. '" "' .. config_file .. '"'
+        else
+            cmd = 'start /b /wait "" ' .. python_executable .. ' "' .. python_script .. '" "' .. request_file .. '" "' .. response_file .. '" "' .. config_file .. '"'
+        end
     end
 
-    -- Используем io.popen вместо os.execute для скрытия окна
+    -- Запускаем процесс
     local handle = io.popen(cmd .. " && echo __SUCCESS__ || echo __FAILED__", "r")
     if handle then
         local output = handle:read("*a")
         handle:close()
-        -- Проверяем успех по маркеру или наличию response файла
-        if output:find("__SUCCESS__") then
-            return true
-        end
     end
 
-    -- Fallback: проверяем наличие response файла
+    -- Проверяем что response файл создан ПОСЛЕ запуска
     local f = io.open(response_file, "r")
     if f then
         local content = f:read("*a")
         f:close()
-        return content and content ~= ""
+        if content and content ~= "" then
+            -- Проверяем что файл содержит валидный JSON
+            local ok, data = pcall(json.decode, content)
+            if ok and data then
+                return true
+            end
+        end
     end
     return false
 end
@@ -383,22 +458,58 @@ local function translate_line(subs, sel, active)
         return
     end
 
-    -- Показываем результаты
-    show_result_dialog(subs, active, line, response.variants, request_data, source_blocks, res.num_variants)
+    -- Показываем результаты с картинкой если есть
+    show_result_dialog(subs, active, line, response, request_data, source_blocks, res.num_variants)
+end
+
+-- ============== Открытие картинки ==============
+
+local function open_image(image_path)
+    if not image_path then return end
+
+    local cmd
+    if separator == "/" then
+        -- Linux/Mac
+        if os.execute("which xdg-open >/dev/null 2>&1") == 0 then
+            cmd = 'xdg-open "' .. image_path .. '" &'
+        elseif os.execute("which open >/dev/null 2>&1") == 0 then
+            cmd = 'open "' .. image_path .. '" &'
+        end
+    else
+        -- Windows
+        cmd = 'start "" "' .. image_path .. '"'
+    end
+
+    if cmd then
+        os.execute(cmd)
+    end
 end
 
 -- ============== Диалог результатов ==============
 
-function show_result_dialog(subs, active, line, variants, request_data, source_blocks, num_variants)
+function show_result_dialog(subs, active, line, response, request_data, source_blocks, num_variants)
+    local variants = response.variants
+    local image_path = response.image_path
+    local scene_desc = response.scene_description
+
     local truncate = function(text, max)
         max = max or 60
         return #text > max and text:sub(1, max) .. "..." or text
     end
 
     local dialog = {
-        {class="label", label="Оригинал: " .. truncate(line.text), x=0, y=0, width=3},
-        {class="label", label="", x=0, y=1},
+        {class="label", label="Оригинал: " .. truncate(line.text), x=0, y=0, width=4},
     }
+
+    -- Показываем инфо о картинке если есть
+    local y_offset = 1
+    if image_path then
+        table.insert(dialog, {class="label", label="🖼 Картинка сгенерирована: " .. truncate(scene_desc or "сцена", 40), x=0, y=y_offset, width=4})
+        y_offset = y_offset + 1
+    end
+
+    table.insert(dialog, {class="label", label="", x=0, y=y_offset})
+    y_offset = y_offset + 1
 
     -- Варианты
     local dropdown_items = {}
@@ -406,30 +517,46 @@ function show_result_dialog(subs, active, line, variants, request_data, source_b
         table.insert(dropdown_items, i .. ". " .. v)
     end
 
-    table.insert(dialog, {class="label", label="Выберите вариант:", x=0, y=2})
-    table.insert(dialog, {class="dropdown", name="selected", items=dropdown_items, value=dropdown_items[1], x=0, y=3, width=3})
+    table.insert(dialog, {class="label", label="Выберите вариант:", x=0, y=y_offset})
+    table.insert(dialog, {class="dropdown", name="selected", items=dropdown_items, value=dropdown_items[1], x=0, y=y_offset + 1, width=4})
+    y_offset = y_offset + 2
 
-    table.insert(dialog, {class="label", label="Или отредактируйте:", x=0, y=4})
-    table.insert(dialog, {class="textbox", name="edited", value=variants[1], x=0, y=5, width=3, height=3})
+    table.insert(dialog, {class="label", label="Или отредактируйте:", x=0, y=y_offset})
+    table.insert(dialog, {class="textbox", name="edited", value=variants[1], x=0, y=y_offset + 1, width=4, height=3})
+    y_offset = y_offset + 4
 
-    table.insert(dialog, {class="label", label="", x=0, y=8})
-    table.insert(dialog, {class="label", label="Feedback для retry (опционально):", x=0, y=9, width=3})
-    table.insert(dialog, {class="edit", name="feedback", value="", x=0, y=10, width=3})
+    table.insert(dialog, {class="label", label="Feedback для retry:", x=0, y=y_offset, width=2})
+    table.insert(dialog, {class="edit", name="feedback", value="", x=0, y=y_offset + 1, width=4})
 
-    local buttons = {"Применить", "Retry", "Отмена"}
+    -- Кнопки с учётом картинки
+    local buttons
+    if image_path then
+        buttons = {"Применить", "Показать картинку", "Retry", "Отмена"}
+    else
+        buttons = {"Применить", "Retry", "Отмена"}
+    end
+
     local btn, res = aegisub.dialog.display(dialog, buttons)
 
     if btn == "Отмена" then
+        return
+    elseif btn == "Показать картинку" then
+        open_image(image_path)
+        -- Показываем диалог снова
+        show_result_dialog(subs, active, line, response, request_data, source_blocks, num_variants)
         return
     elseif btn == "Retry" then
         request_data.feedback = res.feedback ~= "" and res.feedback or "дай другие варианты"
         write_json_file(request_file, request_data)
 
+        -- Удаляем старый response перед retry
+        delete_file(response_file)
+
         aegisub.progress.task("AI думает снова...")
         if run_python_backend() then
             local new_response = read_json_file(response_file)
             if new_response and new_response.variants then
-                show_result_dialog(subs, active, line, new_response.variants, request_data, source_blocks, num_variants)
+                show_result_dialog(subs, active, line, new_response, request_data, source_blocks, num_variants)
             end
         end
         return
