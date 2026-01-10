@@ -71,6 +71,7 @@ LOCALIZATION_PROMPT = """Ты профессиональный локализа�
 - Используй живой русский язык, не кальки с английского
 - Сохраняй эмоциональный окрас и интонацию оригинала
 - Учитывай длительность субтитра (текст должен успеть прочитаться)
+- КРИТИЧЕСКИ ВАЖНО: символы \\N в тексте - это переносы строк субтитра, СОХРАНЯЙ их в ответе!
 """
 
 
@@ -263,13 +264,10 @@ def parse_variants(response_text: str, num_variants: int = 3, original_ru: str =
 
         # Remove any remaining ** markers
         cleaned = cleaned.replace('**', '')
-
-        # Clean up Aegisub line break commands that might interfere
-        # Replace \N with space, preserve the text
-        cleaned = cleaned.replace('\\N', ' ').replace('\\n', ' ')
-        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        cleaned = cleaned.strip()
 
         # Must contain Cyrillic and be substantial
+        # NOTE: \N is Aegisub line break - we KEEP it!
         if cleaned and len(cleaned) > 2:
             if re.search(r'[а-яА-ЯёЁ]', cleaned):
                 variants.append(cleaned)
@@ -280,12 +278,10 @@ def parse_variants(response_text: str, num_variants: int = 3, original_ru: str =
         bold_matches = re.findall(r'\*\*([^*]+)\*\*', response_text)
         for match in bold_matches:
             if re.search(r'[а-яА-ЯёЁ]', match):
-                cleaned = match.replace('\\N', ' ').replace('\\n', ' ')
-                cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-                variants.append(cleaned)
+                variants.append(match.strip())
 
         if not variants:
-            russian_match = re.search(r'[а-яА-ЯёЁ][а-яА-ЯёЁ\s\.\,\!\?\-\'\"]*[а-яА-ЯёЁ]', response_text)
+            russian_match = re.search(r'[а-яА-ЯёЁ][а-яА-ЯёЁ\s\.\,\!\?\-\'\"\\N]*[а-яА-ЯёЁ]', response_text)
             if russian_match:
                 variants.append(russian_match.group().strip())
 
@@ -294,8 +290,7 @@ def parse_variants(response_text: str, num_variants: int = 3, original_ru: str =
         if original_ru:
             variants = [original_ru]
         elif response_text.strip():
-            cleaned = response_text.strip().replace('\\N', ' ').replace('\\n', ' ')
-            variants = [re.sub(r'\s+', ' ', cleaned).strip()]
+            variants = [response_text.strip()]
         else:
             variants = ["[Не удалось получить перевод]"]
 

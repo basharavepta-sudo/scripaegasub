@@ -250,7 +250,7 @@ class TestResponseParsing(unittest.TestCase):
     def test_parse_with_backslash_n(self):
         text = "1. Привет\\Nмир\n2. Тест"
         variants = alma_backend.parse_variants(text)
-        self.assertIn("Привет мир", variants)  # \N заменяется на пробел
+        self.assertIn("Привет\\Nмир", variants)  # \N сохраняется!
 
     def test_parse_empty_response(self):
         variants = alma_backend.parse_variants("", original_ru="Оригинал")
