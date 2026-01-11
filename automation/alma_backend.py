@@ -166,10 +166,13 @@ def generate_translation_prompt(data: Dict[str, Any], config: Dict[str, Any]) ->
     if feedback:
         lines.append(f"Требования: {feedback}")
 
-    # Request variants
+    # Request variants with special markers for reliable parsing
     lines.append(f"\nДай {num_variants} вариант(а).")
-    lines.append("Формат: 1. ... 2. ... 3. ...")
-    lines.append("Полный текст, без комментариев!")
+    lines.append("ВАЖНО - используй ТОЧНЫЙ формат с маркерами:")
+    lines.append("[1]текст первого варианта[/1]")
+    lines.append("[2]текст второго варианта[/2]")
+    lines.append("[3]текст третьего варианта[/3]")
+    lines.append("Пиши ПОЛНЫЙ текст внутри маркеров! Без комментариев!")
 
     return "\n".join(lines)
 
@@ -285,46 +288,59 @@ def generate_with_transformers(prompt: str, config: Dict[str, Any], model_cache:
 def parse_variants(response_text: str, num_variants: int = 3, original_ru: str = "") -> List[str]:
     """Parse translation variants from response."""
     variants = []
-    lines = response_text.strip().split('\n')
 
     logger.debug(f"Parsing response: {response_text[:500]}...")
 
     # Normalize original for comparison (strip and lowercase)
     original_normalized = original_ru.strip().lower() if original_ru else ""
 
-    # First, try to parse numbered variants (1. ... 2. ... 3. ...)
-    # Collect multi-line variants - lines until next number
-    current_variant = []
-    current_num = 0
+    # PRIMARY METHOD: Extract text between special markers [1]...[/1], [2]...[/2], etc.
+    # This is the most reliable method - markers clearly delimit each variant
+    for i in range(1, num_variants + 1):
+        # Pattern: [1]любой текст включая переносы строк[/1]
+        pattern = rf'\[{i}\](.*?)\[/{i}\]'
+        match = re.search(pattern, response_text, re.DOTALL)
+        if match:
+            text = match.group(1).strip()
+            if text:
+                variants.append(text)
+                logger.info(f"Found variant {i} via markers: {text[:50]}...")
 
-    for line in lines:
-        line = line.strip()
-        if not line:
-            continue
+    # FALLBACK: If markers not found, try old numbered format (1. ... 2. ...)
+    if not variants:
+        logger.info("Markers not found, trying numbered format...")
+        lines = response_text.strip().split('\n')
+        current_variant = []
+        current_num = 0
 
-        # Check if this line starts a new numbered variant
-        num_match = re.match(r'^(\d+)[\.\)\:]\s*(.*)$', line)
-        if num_match:
-            # Save previous variant if exists
-            if current_variant and current_num > 0:
-                full_text = ' '.join(current_variant)
-                variants.append(full_text)
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
 
-            # Start new variant
-            current_num = int(num_match.group(1))
-            rest = num_match.group(2).strip()
-            current_variant = [rest] if rest else []
-        elif current_num > 0:
-            # Continue current variant (multi-line)
-            # Skip meta lines
-            skip_patterns = ['формат', 'вариант', 'ответ:', 'перевод:', 'here are', 'translation:']
-            if not any(skip in line.lower() for skip in skip_patterns):
-                current_variant.append(line)
+            # Check if this line starts a new numbered variant
+            num_match = re.match(r'^(\d+)[\.\)\:]\s*(.*)$', line)
+            if num_match:
+                # Save previous variant if exists
+                if current_variant and current_num > 0:
+                    full_text = ' '.join(current_variant)
+                    variants.append(full_text)
 
-    # Don't forget last variant
-    if current_variant and current_num > 0:
-        full_text = ' '.join(current_variant)
-        variants.append(full_text)
+                # Start new variant
+                current_num = int(num_match.group(1))
+                rest = num_match.group(2).strip()
+                current_variant = [rest] if rest else []
+            elif current_num > 0:
+                # Continue current variant (multi-line)
+                # Skip meta lines
+                skip_patterns = ['формат', 'вариант', 'ответ:', 'перевод:', 'here are', 'translation:', 'важно', 'маркер']
+                if not any(skip in line.lower() for skip in skip_patterns):
+                    current_variant.append(line)
+
+        # Don't forget last variant
+        if current_variant and current_num > 0:
+            full_text = ' '.join(current_variant)
+            variants.append(full_text)
 
     # Clean up variants
     cleaned_variants = []
