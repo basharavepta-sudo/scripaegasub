@@ -114,27 +114,30 @@ def generate_translation_prompt(data: Dict[str, Any], config: Dict[str, Any]) ->
         lines.append(f"Длительность: {duration:.1f}с (примерно {est_chars} символов).")
 
     # Context lines (show more context for better understanding)
+    if context_before or context_after:
+        lines.append("\n[Контекст для понимания - НЕ переводи, только для справки]")
+
     if context_before:
-        lines.append("\n--- КОНТЕКСТ (предыдущие строки) ---")
+        lines.append("ДО (предыдущие субтитры):")
         for ctx in context_before[-2:]:  # Last 2 lines
             if ctx.get('en'):
-                lines.append(f"EN: {ctx['en']}")
+                lines.append(f"  EN: {ctx['en']}")
             if ctx.get('ru'):
-                lines.append(f"RU: {ctx['ru']}")
+                lines.append(f"  RU: {ctx['ru']}")
 
     # Current line to translate
-    lines.append("\n--- ТЕКУЩАЯ СТРОКА ---")
+    lines.append("\n>>> ПЕРЕВЕДИ ЭТУ СТРОКУ <<<")
     if en_text:
-        lines.append(f"[АНГЛИЙСКИЙ ОРИГИНАЛ]: {en_text}")
+        lines.append(f"[АНГЛИЙСКИЙ]: {en_text}")
     if ru_text and ru_text != en_text:
-        lines.append(f"[ТЕКУЩИЙ ПЕРЕВОД]: {ru_text}")
+        lines.append(f"[ТЕКУЩИЙ RU]: {ru_text}")
 
     # Following context
     if context_after:
-        lines.append("\n--- КОНТЕКСТ (следующие строки) ---")
+        lines.append("\nПОСЛЕ (следующие субтитры):")
         for ctx in context_after[:2]:  # Next 2 lines
             if ctx.get('en'):
-                lines.append(f"EN: {ctx['en']}")
+                lines.append(f"  EN: {ctx['en']}")
 
     # Instructions
     if default_instructions:

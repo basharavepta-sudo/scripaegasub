@@ -248,21 +248,23 @@ local function translate_line(subs, sel, active)
 
     -- Диалог быстрых настроек
     local quick_dialog = {
-        {class="label", label="Текущая строка: " .. (line.text:sub(1, 50) .. (#line.text > 50 and "..." or "")), x=0, y=0, width=3},
+        {class="label", label="Текущая строка: " .. (line.text:sub(1, 50) .. (#line.text > 50 and "..." or "")), x=0, y=0, width=4},
         {class="label", label="", x=0, y=1},
 
         -- Быстрое отображение/редактирование контекста
         {class="label", label="Контекст проекта:", x=0, y=2},
-        {class="edit", name="global_context", value=settings.global_context or "", x=0, y=3, width=3},
+        {class="edit", name="global_context", value=settings.global_context or "", x=0, y=3, width=4},
 
-        {class="label", label="Инструкции для этого перевода:", x=0, y=4, width=3},
-        {class="textbox", name="instructions", value="", x=0, y=5, width=3, height=2},
+        {class="label", label="Инструкции для этого перевода:", x=0, y=4, width=4},
+        {class="edit", name="instructions", value="", x=0, y=5, width=4},
 
-        {class="label", label="Вариантов:", x=0, y=7},
-        {class="intedit", name="num_variants", value=settings.num_variants, min=1, max=5, x=1, y=7},
+        {class="label", label="Вариантов:", x=0, y=6},
+        {class="intedit", name="num_variants", value=settings.num_variants, min=1, max=5, x=1, y=6},
 
-        {class="label", label="Стиль:", x=0, y=8},
-        {class="dropdown", name="style", items={"natural", "formal", "casual", "literal"}, value=settings.translation_style or "natural", x=1, y=8, width=2},
+        {class="label", label="Стиль:", x=2, y=6},
+        {class="dropdown", name="style", items={"natural", "formal", "casual", "literal"}, value=settings.translation_style or "natural", x=3, y=6},
+
+        {class="checkbox", name="use_context", label="Показать AI соседние субтитры (контекст до/после)", value=true, x=0, y=7, width=4},
     }
 
     local btn, res = aegisub.dialog.display(quick_dialog, {"Перевести", "Настройки", "Отмена"})
@@ -333,28 +335,31 @@ local function translate_line(subs, sel, active)
 
     local current_d_idx = line_id_map[active]
 
-    -- Собираем контекст
+    -- Собираем контекст (только если галочка включена)
     local context_before = {}
     local context_after = {}
-    local ctx_size = settings.context_lines or 1
 
-    for i = math.max(1, active - ctx_size), active - 1 do
-        if subs[i].class == "dialogue" then
-            local d_idx = line_id_map[i]
-            table.insert(context_before, {
-                ru = subs[i].text,
-                en = source_blocks and d_idx and source_blocks[d_idx] or ""
-            })
+    if res.use_context then
+        local ctx_size = settings.context_lines or 2
+
+        for i = math.max(1, active - ctx_size), active - 1 do
+            if subs[i].class == "dialogue" then
+                local d_idx = line_id_map[i]
+                table.insert(context_before, {
+                    ru = subs[i].text,
+                    en = source_blocks and d_idx and source_blocks[d_idx] or ""
+                })
+            end
         end
-    end
 
-    for i = active + 1, math.min(#subs, active + ctx_size) do
-        if subs[i].class == "dialogue" then
-            local d_idx = line_id_map[i]
-            table.insert(context_after, {
-                ru = subs[i].text,
-                en = source_blocks and d_idx and source_blocks[d_idx] or ""
-            })
+        for i = active + 1, math.min(#subs, active + ctx_size) do
+            if subs[i].class == "dialogue" then
+                local d_idx = line_id_map[i]
+                table.insert(context_after, {
+                    ru = subs[i].text,
+                    en = source_blocks and d_idx and source_blocks[d_idx] or ""
+                })
+            end
         end
     end
 
