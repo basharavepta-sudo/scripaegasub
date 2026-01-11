@@ -169,8 +169,8 @@ class TestPromptGeneration(unittest.TestCase):
         }
         prompt = alma_backend.generate_translation_prompt(data, self.config)
         self.assertIn("Hello", prompt)
-        self.assertIn("3 РАЗНЫХ вариант", prompt)  # Updated prompt text
-        self.assertIn("локализатор", prompt.lower())  # Проверяем наличие инструкций локализации
+        self.assertIn("3 вариант", prompt)
+        self.assertIn("редактор", prompt.lower())  # Проверяем наличие инструкций
 
     def test_generate_prompt_with_feedback(self):
         data = {

@@ -64,20 +64,28 @@ STYLE_PRESETS = {
     "literal": "буквально, близко к оригиналу"
 }
 
-# Base localization instructions (always included)
-LOCALIZATION_PROMPT = """Ты профессиональный локализатор субтитров с английского на русский.
+# Base prompt
+BASE_PROMPT = """Ты профессиональный редактор субтитров.
 ВАЖНО: Отвечай ТОЛЬКО на русском языке!
-Это НЕ просто перевод, а ЛОКАЛИЗАЦИЯ для русскоязычной аудитории.
-- Английский сленг, идиомы, культурные отсылки адаптируй под понятные русским аналоги
-- Используй живой русский язык, не кальки с английского
-- Сохраняй эмоциональный окрас и интонацию оригинала
-- Учитывай длительность субтитра (текст должен успеть прочитаться)
-- НИКОГДА не возвращай исходный текст без изменений!
+НЕ возвращай исходный текст без изменений!
 """
+
+# Mode: EN->RU translation
+TRANSLATION_MODE = """ЗАДАЧА: Локализация с английского на русский.
+- Адаптируй сленг, идиомы под русские аналоги
+- Используй живой русский язык
+- Сохраняй эмоции и интонацию"""
+
+# Mode: RU editing only (no English)
+EDITING_MODE = """ЗАДАЧА: Улучшить русский текст для читаемости.
+- Сделай фразу более естественной
+- Исправь неуклюжие обороты
+- Улучши логику и читаемость
+- Сохрани смысл"""
 
 
 def generate_translation_prompt(data: Dict[str, Any], config: Dict[str, Any]) -> str:
-    """Generates optimized prompt for translation."""
+    """Generates optimized prompt for translation or editing."""
     current_line = data.get("current_line", {})
     context_before = data.get("context_before", [])
     context_after = data.get("context_after", [])
@@ -93,66 +101,67 @@ def generate_translation_prompt(data: Dict[str, Any], config: Dict[str, Any]) ->
     en_text = current_line.get('en', '') or ''
     ru_text = current_line.get('ru', '') or ''
     duration = current_line.get('duration', 0)
-    max_chars = current_line.get('max_chars', 0)  # Лимит символов от оригинала
+    max_chars = current_line.get('max_chars', 0)
 
-    # Build prompt with localization focus
-    lines = [LOCALIZATION_PROMPT.strip()]
+    # Determine mode: translation (EN->RU) or editing (RU only)
+    has_english = bool(en_text and en_text.strip())
+
+    # Build prompt
+    lines = [BASE_PROMPT.strip()]
+
+    # Add mode-specific instructions
+    if has_english:
+        lines.append(TRANSLATION_MODE.strip())
+    else:
+        lines.append(EDITING_MODE.strip())
+
+    # Style
+    lines.append(f"\nСтиль: {style_desc}.")
 
     # Global context (if set)
     if global_context:
-        lines.append(f"\nО проекте: {global_context}")
+        lines.append(f"О проекте: {global_context}")
 
-    # Style
-    lines.append(f"Стиль: {style_desc}.")
-
-    # Character limit (from original subtitle length)
+    # Character limit
     if max_chars and max_chars > 0:
-        lines.append(f"ВАЖНО: Длина перевода должна быть около {max_chars} символов (±10%)!")
-    elif duration > 0:
-        # Fallback to duration-based estimate
-        est_chars = int(duration * 15)
-        lines.append(f"Длительность: {duration:.1f}с (примерно {est_chars} символов).")
+        lines.append(f"Длина: ~{max_chars} символов!")
 
-    # Context lines (show more context for better understanding)
+    # Context (before/after subtitles)
     if context_before or context_after:
-        lines.append("\n[Контекст для понимания - НЕ переводи, только для справки]")
+        lines.append("\n[Контекст - только для понимания, НЕ редактируй]")
 
     if context_before:
-        lines.append("ДО (предыдущие субтитры):")
-        for ctx in context_before[-2:]:  # Last 2 lines
-            if ctx.get('en'):
-                lines.append(f"  EN: {ctx['en']}")
+        lines.append("ДО:")
+        for ctx in context_before[-2:]:
             if ctx.get('ru'):
-                lines.append(f"  RU: {ctx['ru']}")
+                lines.append(f"  {ctx['ru']}")
 
-    # Current line to translate
-    lines.append("\n>>> ПЕРЕВЕДИ ЭТУ СТРОКУ <<<")
-    if en_text:
-        lines.append(f"[АНГЛИЙСКИЙ]: {en_text}")
-    if ru_text and ru_text != en_text:
-        lines.append(f"[ТЕКУЩИЙ RU]: {ru_text}")
+    # Current line
+    if has_english:
+        lines.append("\n>>> ПЕРЕВЕДИ <<<")
+        lines.append(f"EN: {en_text}")
+        if ru_text:
+            lines.append(f"(текущий RU: {ru_text})")
+    else:
+        lines.append("\n>>> УЛУЧШИ <<<")
+        lines.append(f"RU: {ru_text}")
 
-    # Following context
     if context_after:
-        lines.append("\nПОСЛЕ (следующие субтитры):")
-        for ctx in context_after[:2]:  # Next 2 lines
-            if ctx.get('en'):
-                lines.append(f"  EN: {ctx['en']}")
+        lines.append("\nПОСЛЕ:")
+        for ctx in context_after[:2]:
+            if ctx.get('ru'):
+                lines.append(f"  {ctx['ru']}")
 
     # Instructions
     if default_instructions:
         lines.append(f"\nУказания: {default_instructions}")
-
     if feedback:
-        lines.append(f"Доп. требования: {feedback}")
+        lines.append(f"Требования: {feedback}")
 
-    # Request variants with clear format
-    lines.append(f"\nДай {num_variants} РАЗНЫХ вариант(а) локализации.")
-    if max_chars and max_chars > 0:
-        lines.append(f"ВАЖНО: Каждый вариант ~{max_chars} символов (как оригинал)!")
-    lines.append("Формат ответа: пронумерованный список (1. 2. 3.)")
-    lines.append("ВАЖНО: Пиши ПОЛНЫЙ текст, не обрезай и не сокращай!")
-    lines.append("Только русский перевод, без комментариев!")
+    # Request variants
+    lines.append(f"\nДай {num_variants} вариант(а).")
+    lines.append("Формат: 1. ... 2. ... 3. ...")
+    lines.append("Полный текст, без комментариев!")
 
     return "\n".join(lines)
 
