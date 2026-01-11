@@ -144,16 +144,12 @@ def generate_translation_prompt(data: Dict[str, Any], config: Dict[str, Any]) ->
         lines.append(f"Доп. требования: {feedback}")
 
     # Request variants with clear format
-    lines.append(f"\nДай {num_variants} РАЗНЫХ вариант(а) перевода на русский.")
+    lines.append(f"\nДай {num_variants} РАЗНЫХ вариант(а) локализации.")
     if max_chars and max_chars > 0:
-        lines.append(f"Каждый вариант должен быть около {max_chars} символов!")
-    lines.append("ФОРМАТ ОТВЕТА:")
-    lines.append("1. Первый вариант")
-    lines.append("2. Второй вариант")
-    if num_variants >= 3:
-        lines.append("3. Третий вариант")
-    lines.append("")
-    lines.append("Только русский текст, без пояснений!")
+        lines.append(f"ВАЖНО: Каждый вариант ~{max_chars} символов (как оригинал)!")
+    lines.append("Формат ответа: пронумерованный список (1. 2. 3.)")
+    lines.append("ВАЖНО: Пиши ПОЛНЫЙ текст, не обрезай и не сокращай!")
+    lines.append("Только русский перевод, без комментариев!")
 
     return "\n".join(lines)
 
