@@ -387,6 +387,83 @@ local function translate_line(subs, sel, active)
     show_result_dialog(subs, active, line, response.variants, request_data, source_blocks, res.num_variants)
 end
 
+-- ============== Форматирование строк ==============
+
+local function format_line_breaks(text)
+    -- Добавляет \N после точки/запятой и каждые ~6 слов
+    -- Не спамит если \N уже рядом
+
+    -- Сначала убираем лишние пробелы
+    text = text:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+
+    -- Заменяем существующие \N на маркер чтобы отслеживать
+    local marker = "\001"
+    text = text:gsub("\\N", marker)
+
+    local result = {}
+    local words_since_break = 0
+    local i = 1
+
+    while i <= #text do
+        local char = text:sub(i, i)
+
+        if char == marker:sub(1,1) then
+            -- Это уже существующий \N
+            table.insert(result, "\\N")
+            words_since_break = 0
+            i = i + 1
+        elseif char == " " then
+            words_since_break = words_since_break + 1
+
+            -- Проверяем нужен ли перенос после 6 слов
+            if words_since_break >= 6 then
+                -- Проверяем что впереди нет \N в ближайших символах
+                local ahead = text:sub(i + 1, i + 10)
+                if not ahead:find(marker) then
+                    table.insert(result, " \\N")
+                    words_since_break = 0
+                else
+                    table.insert(result, " ")
+                end
+            else
+                table.insert(result, " ")
+            end
+            i = i + 1
+        elseif char == "." or char == "," or char == "!" or char == "?" then
+            table.insert(result, char)
+
+            -- После пунктуации добавляем \N если следует пробел и текст
+            local next_char = text:sub(i + 1, i + 1)
+            if next_char == " " then
+                -- Проверяем что впереди нет \N рядом
+                local ahead = text:sub(i + 1, i + 10)
+                if not ahead:find(marker) and #text > i + 1 then
+                    table.insert(result, " \\N")
+                    words_since_break = 0
+                    i = i + 2  -- Пропускаем пробел
+                else
+                    i = i + 1
+                end
+            else
+                i = i + 1
+            end
+        else
+            table.insert(result, char)
+            i = i + 1
+        end
+    end
+
+    local formatted = table.concat(result)
+
+    -- Убираем \N в начале и конце
+    formatted = formatted:gsub("^%s*\\N%s*", ""):gsub("%s*\\N%s*$", "")
+
+    -- Убираем двойные \N
+    formatted = formatted:gsub("\\N%s*\\N", "\\N")
+
+    return formatted
+end
+
 -- ============== Диалог результатов ==============
 
 function show_result_dialog(subs, active, line, variants, request_data, source_blocks, num_variants)
@@ -396,25 +473,26 @@ function show_result_dialog(subs, active, line, variants, request_data, source_b
     end
 
     local dialog = {
-        {class="label", label="Оригинал: " .. truncate(line.text), x=0, y=0, width=3},
+        {class="label", label="Оригинал: " .. truncate(line.text), x=0, y=0, width=4},
         {class="label", label="", x=0, y=1},
+        {class="label", label="Варианты (редактируйте любой):", x=0, y=2, width=4},
     }
 
-    -- Варианты
-    local dropdown_items = {}
+    -- Показываем каждый вариант как отдельное редактируемое поле
+    local y_pos = 3
     for i, v in ipairs(variants) do
-        table.insert(dropdown_items, i .. ". " .. v)
+        table.insert(dialog, {class="checkbox", name="use_" .. i, label=i .. ".", value=(i == 1), x=0, y=y_pos})
+        table.insert(dialog, {class="edit", name="var_" .. i, value=v, x=1, y=y_pos, width=3})
+        y_pos = y_pos + 1
     end
 
-    table.insert(dialog, {class="label", label="Выберите вариант:", x=0, y=2})
-    table.insert(dialog, {class="dropdown", name="selected", items=dropdown_items, value=dropdown_items[1], x=0, y=3, width=3})
+    y_pos = y_pos + 1
+    table.insert(dialog, {class="checkbox", name="auto_format", label="Авто-форматирование (\\N после пунктуации и каждые 6 слов)", value=true, x=0, y=y_pos, width=4})
 
-    table.insert(dialog, {class="label", label="Или отредактируйте:", x=0, y=4})
-    table.insert(dialog, {class="textbox", name="edited", value=variants[1], x=0, y=5, width=3, height=3})
-
-    table.insert(dialog, {class="label", label="", x=0, y=8})
-    table.insert(dialog, {class="label", label="Feedback для retry (опционально):", x=0, y=9, width=3})
-    table.insert(dialog, {class="edit", name="feedback", value="", x=0, y=10, width=3})
+    y_pos = y_pos + 1
+    table.insert(dialog, {class="label", label="Feedback для retry:", x=0, y=y_pos, width=4})
+    y_pos = y_pos + 1
+    table.insert(dialog, {class="edit", name="feedback", value="", x=0, y=y_pos, width=4})
 
     local buttons = {"Применить", "Retry", "Отмена"}
     local btn, res = aegisub.dialog.display(dialog, buttons)
@@ -434,14 +512,25 @@ function show_result_dialog(subs, active, line, variants, request_data, source_b
         end
         return
     else
-        -- Применить
-        local final = res.edited
-        if final == variants[1] then
-            local num = tonumber(res.selected:match("^(%d+)%."))
-            if num and num > 1 and num <= #variants then
-                final = variants[num]
+        -- Применить - находим выбранный вариант
+        local final = nil
+        for i = 1, #variants do
+            if res["use_" .. i] then
+                final = res["var_" .. i]
+                break
             end
         end
+
+        -- Если ничего не выбрано, берём первый
+        if not final then
+            final = res["var_1"] or variants[1]
+        end
+
+        -- Применяем авто-форматирование если включено
+        if res.auto_format then
+            final = format_line_breaks(final)
+        end
+
         line.text = final
         subs[active] = line
         aegisub.set_undo_point("AI Subtitle Edit")
