@@ -215,12 +215,13 @@ def generate_with_ollama(prompt: str, config: Dict[str, Any]) -> str:
         "prompt": prompt,
         "stream": False,
         "context": [],  # Empty context = new chat, no memory from previous requests
+        "keep_alive": "30m",  # Keep model in memory for 30 minutes (faster subsequent requests)
         "options": {
             "temperature": temperature,
-            "num_predict": 1024,  # Increased for longer responses
+            "num_predict": 1024,
             "top_p": 0.9,
             "repeat_penalty": 1.1,
-            "num_ctx": 2048  # Limit context window
+            "num_ctx": 2048
         }
     }
 
