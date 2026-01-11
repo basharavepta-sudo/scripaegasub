@@ -390,78 +390,75 @@ end
 -- ============== Форматирование строк ==============
 
 local function format_line_breaks(text)
-    -- Добавляет \N после точки/запятой и каждые ~6 слов
-    -- Не спамит если \N уже рядом
+    -- Разбивает длинную строку на 2 части для читаемости
+    -- Ставит \N примерно посередине, желательно после пунктуации
 
-    -- Сначала убираем лишние пробелы
-    text = text:gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
+    -- Убираем лишние пробелы и существующие \N
+    text = text:gsub("\\N", " "):gsub("%s+", " "):gsub("^%s+", ""):gsub("%s+$", "")
 
-    -- Заменяем существующие \N на маркер чтобы отслеживать
-    local marker = "\001"
-    text = text:gsub("\\N", marker)
+    -- Если строка короткая (меньше 45 символов) - не трогаем
+    if #text <= 45 then
+        return text
+    end
 
-    local result = {}
-    local words_since_break = 0
-    local i = 1
+    -- Если уже есть перенос - не трогаем
+    if text:find("\\N") then
+        return text
+    end
 
-    while i <= #text do
+    -- Ищем лучшее место для разрыва около середины
+    local mid = math.floor(#text / 2)
+    local best_pos = nil
+    local best_score = 999
+
+    -- Ищем пунктуацию около середины (. ! ? ,)
+    for i = math.max(10, mid - 20), math.min(#text - 10, mid + 20) do
         local char = text:sub(i, i)
+        local next_char = text:sub(i + 1, i + 1)
 
-        if char == marker:sub(1,1) then
-            -- Это уже существующий \N
-            table.insert(result, "\\N")
-            words_since_break = 0
-            i = i + 1
-        elseif char == " " then
-            words_since_break = words_since_break + 1
+        if next_char == " " then
+            local score = math.abs(i - mid)
 
-            -- Проверяем нужен ли перенос после 6 слов
-            if words_since_break >= 6 then
-                -- Проверяем что впереди нет \N в ближайших символах
-                local ahead = text:sub(i + 1, i + 10)
-                if not ahead:find(marker) then
-                    table.insert(result, " \\N")
-                    words_since_break = 0
-                else
-                    table.insert(result, " ")
-                end
-            else
-                table.insert(result, " ")
+            -- Предпочитаем конец предложения
+            if char == "." or char == "!" or char == "?" then
+                score = score - 15  -- Сильно предпочитаем
+            elseif char == "," then
+                score = score - 5   -- Немного предпочитаем
             end
-            i = i + 1
-        elseif char == "." or char == "," or char == "!" or char == "?" then
-            table.insert(result, char)
 
-            -- После пунктуации добавляем \N если следует пробел и текст
-            local next_char = text:sub(i + 1, i + 1)
-            if next_char == " " then
-                -- Проверяем что впереди нет \N рядом
-                local ahead = text:sub(i + 1, i + 10)
-                if not ahead:find(marker) and #text > i + 1 then
-                    table.insert(result, " \\N")
-                    words_since_break = 0
-                    i = i + 2  -- Пропускаем пробел
-                else
-                    i = i + 1
-                end
-            else
-                i = i + 1
+            if score < best_score then
+                best_score = score
+                best_pos = i + 1  -- После пробела
             end
-        else
-            table.insert(result, char)
-            i = i + 1
         end
     end
 
-    local formatted = table.concat(result)
+    -- Если не нашли пунктуацию, ищем просто пробел около середины
+    if not best_pos then
+        for i = mid, mid + 15 do
+            if text:sub(i, i) == " " then
+                best_pos = i
+                break
+            end
+        end
+        if not best_pos then
+            for i = mid, mid - 15, -1 do
+                if text:sub(i, i) == " " then
+                    best_pos = i
+                    break
+                end
+            end
+        end
+    end
 
-    -- Убираем \N в начале и конце
-    formatted = formatted:gsub("^%s*\\N%s*", ""):gsub("%s*\\N%s*$", "")
+    -- Вставляем \N
+    if best_pos and best_pos > 10 and best_pos < #text - 10 then
+        local part1 = text:sub(1, best_pos - 1):gsub("%s+$", "")
+        local part2 = text:sub(best_pos + 1):gsub("^%s+", "")
+        return part1 .. " \\N" .. part2
+    end
 
-    -- Убираем двойные \N
-    formatted = formatted:gsub("\\N%s*\\N", "\\N")
-
-    return formatted
+    return text
 end
 
 -- ============== Диалог результатов ==============
