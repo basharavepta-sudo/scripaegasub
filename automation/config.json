@@ -1,7 +1,7 @@
 {
   "backend": "ollama",
   "ollama_url": "http://localhost:11434",
-  "model": "HY-MT1.5-7B-FP8",
+  "model": "demonbyron/HY-MT1.5-7B",
   "temperature": 0.7,
   "retry_temperature": 0.9,
 
@@ -12,11 +12,11 @@
 
   "notes": {
     "backend_options": "ollama (recommended) or transformers",
-    "ollama_models": "HY-MT1.5-7B-FP8, llama3, mistral, qwen2, gemma2",
+    "ollama_models": "demonbyron/HY-MT1.5-7B, llama3, mistral, qwen2, gemma2",
     "num_variants": "1-5 variants per request",
     "global_context": "Persistent context for all translations (e.g. 'This is a comedy movie')",
     "default_instructions": "Default instructions (e.g. 'keep it short and casual')",
     "translation_style": "natural, formal, casual, literal",
-    "ollama_install": "https://ollama.ai - then: ollama pull HY-MT1.5-7B-FP8"
+    "ollama_install": "https://ollama.ai - then: ollama pull demonbyron/HY-MT1.5-7B"
   }
 }

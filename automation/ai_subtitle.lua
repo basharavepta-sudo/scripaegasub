@@ -79,7 +79,7 @@ local function load_settings()
         context_lines = 2,
         source_path = "",  -- Путь к английским субтитрам
         match_length = true,  -- Соблюдать длину оригинала
-        model = "HY-MT1.5-7B-FP8"  -- Модель Ollama
+        model = "demonbyron/HY-MT1.5-7B"  -- Модель Ollama
     }
     return session_settings
 end
@@ -105,13 +105,13 @@ local function show_project_settings()
     local settings = load_settings()
 
     local style_items = {"natural", "formal", "casual", "literal"}
-    local model_items = {"HY-MT1.5-7B-FP8", "llama3", "mistral", "qwen2", "gemma2"}
+    local model_items = {"demonbyron/HY-MT1.5-7B", "llama3", "mistral", "qwen2", "gemma2"}
 
     local dialog = {
         {class="label", label="=== Настройки проекта ===", x=0, y=0, width=4},
 
         {class="label", label="Модель Ollama:", x=0, y=1},
-        {class="dropdown", name="model", items=model_items, value=settings.model or "HY-MT1.5-7B-FP8", x=1, y=1, width=3},
+        {class="dropdown", name="model", items=model_items, value=settings.model or "demonbyron/HY-MT1.5-7B", x=1, y=1, width=3},
 
         {class="label", label="Глобальный контекст (описание фильма/сериала):", x=0, y=2, width=4},
         {class="textbox", name="global_context", value=settings.global_context or "", x=0, y=3, width=4, height=2},
