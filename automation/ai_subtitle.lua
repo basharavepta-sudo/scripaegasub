@@ -78,7 +78,8 @@ local function load_settings()
         num_variants = 3,
         context_lines = 2,
         source_path = "",  -- Путь к английским субтитрам
-        match_length = true  -- Соблюдать длину оригинала
+        match_length = true,  -- Соблюдать длину оригинала
+        model = "HY-MT1.5-7B-FP8"  -- Модель Ollama
     }
     return session_settings
 end
@@ -93,6 +94,7 @@ local function save_settings()
         config.default_instructions = session_settings.default_instructions
         config.translation_style = session_settings.translation_style
         config.num_variants = session_settings.num_variants
+        config.model = session_settings.model
         write_json_file(config_file, config)
     end
 end
@@ -103,29 +105,33 @@ local function show_project_settings()
     local settings = load_settings()
 
     local style_items = {"natural", "formal", "casual", "literal"}
+    local model_items = {"HY-MT1.5-7B-FP8", "llama3", "mistral", "qwen2", "gemma2"}
 
     local dialog = {
         {class="label", label="=== Настройки проекта ===", x=0, y=0, width=4},
 
-        {class="label", label="Глобальный контекст (описание фильма/сериала):", x=0, y=1, width=4},
-        {class="textbox", name="global_context", value=settings.global_context or "", x=0, y=2, width=4, height=2},
+        {class="label", label="Модель Ollama:", x=0, y=1},
+        {class="dropdown", name="model", items=model_items, value=settings.model or "HY-MT1.5-7B-FP8", x=1, y=1, width=3},
 
-        {class="label", label="Инструкции по умолчанию:", x=0, y=4, width=4},
-        {class="edit", name="default_instructions", value=settings.default_instructions or "", x=0, y=5, width=4},
+        {class="label", label="Глобальный контекст (описание фильма/сериала):", x=0, y=2, width=4},
+        {class="textbox", name="global_context", value=settings.global_context or "", x=0, y=3, width=4, height=2},
 
-        {class="label", label="Путь к английским субтитрам (.srt/.txt):", x=0, y=6, width=4},
-        {class="edit", name="source_path", value=settings.source_path or "", x=0, y=7, width=4},
+        {class="label", label="Инструкции по умолчанию:", x=0, y=5, width=4},
+        {class="edit", name="default_instructions", value=settings.default_instructions or "", x=0, y=6, width=4},
 
-        {class="label", label="Стиль:", x=0, y=8},
-        {class="dropdown", name="style", items=style_items, value=settings.translation_style or "natural", x=1, y=8, width=1},
+        {class="label", label="Путь к английским субтитрам (.srt/.txt):", x=0, y=7, width=4},
+        {class="edit", name="source_path", value=settings.source_path or "", x=0, y=8, width=4},
 
-        {class="label", label="Вариантов:", x=2, y=8},
-        {class="intedit", name="num_variants", value=settings.num_variants or 3, min=1, max=5, x=3, y=8},
+        {class="label", label="Стиль:", x=0, y=9},
+        {class="dropdown", name="style", items=style_items, value=settings.translation_style or "natural", x=1, y=9, width=1},
 
-        {class="label", label="Строк контекста:", x=0, y=9},
-        {class="intedit", name="context_lines", value=settings.context_lines or 2, min=0, max=5, x=1, y=9},
+        {class="label", label="Вариантов:", x=2, y=9},
+        {class="intedit", name="num_variants", value=settings.num_variants or 3, min=1, max=5, x=3, y=9},
 
-        {class="checkbox", name="match_length", label="Соблюдать длину оригинала (±10%)", value=settings.match_length ~= false, x=2, y=9, width=2},
+        {class="label", label="Строк контекста:", x=0, y=10},
+        {class="intedit", name="context_lines", value=settings.context_lines or 2, min=0, max=5, x=1, y=10},
+
+        {class="checkbox", name="match_length", label="Соблюдать длину оригинала (±10%)", value=settings.match_length ~= false, x=2, y=10, width=2},
     }
 
     local buttons = {"Сохранить", "Выбрать файл EN", "Отмена"}
@@ -148,8 +154,9 @@ local function show_project_settings()
         session_settings.context_lines = results.context_lines
         session_settings.source_path = results.source_path
         session_settings.match_length = results.match_length
+        session_settings.model = results.model
         save_settings()
-        aegisub.log("Настройки сохранены!\n")
+        aegisub.log("Настройки сохранены! Модель: " .. results.model .. "\n")
     end
 end
 
