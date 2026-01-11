@@ -196,7 +196,7 @@ def generate_with_ollama(prompt: str, config: Dict[str, Any]) -> str:
         "stream": False,
         "options": {
             "temperature": temperature,
-            "num_predict": 300,  # Reduced for speed
+            "num_predict": 1024,  # Increased for longer responses
             "top_p": 0.9,
             "repeat_penalty": 1.1
         }
@@ -269,53 +269,65 @@ def parse_variants(response_text: str, num_variants: int = 3, original_ru: str =
     # Normalize original for comparison (strip and lowercase)
     original_normalized = original_ru.strip().lower() if original_ru else ""
 
+    # First, try to parse numbered variants (1. ... 2. ... 3. ...)
+    # Collect multi-line variants - lines until next number
+    current_variant = []
+    current_num = 0
+
     for line in lines:
         line = line.strip()
         if not line:
             continue
 
-        # Skip lines that look like instructions, labels or English text
-        skip_patterns = ['формат', 'вариант перевода', 'ответ:', 'перевод:', 'here are', 'translation:', 'option']
-        if any(skip in line.lower() for skip in skip_patterns):
-            if not re.search(r'^\d+[\.\)\:]', line):  # Unless it's numbered
-                continue
+        # Check if this line starts a new numbered variant
+        num_match = re.match(r'^(\d+)[\.\)\:]\s*(.*)$', line)
+        if num_match:
+            # Save previous variant if exists
+            if current_variant and current_num > 0:
+                full_text = ' '.join(current_variant)
+                variants.append(full_text)
 
-        # Remove various numbering formats (1., 1), 1:, 1.1., -,  •, etc.)
-        cleaned = re.sub(r'^[\d]+[\.\)\:\-]\s*', '', line)
-        cleaned = re.sub(r'^[-•]\s*', '', cleaned)
+            # Start new variant
+            current_num = int(num_match.group(1))
+            rest = num_match.group(2).strip()
+            current_variant = [rest] if rest else []
+        elif current_num > 0:
+            # Continue current variant (multi-line)
+            # Skip meta lines
+            skip_patterns = ['формат', 'вариант', 'ответ:', 'перевод:', 'here are', 'translation:']
+            if not any(skip in line.lower() for skip in skip_patterns):
+                current_variant.append(line)
 
-        # Extract text from **bold** markers if present
-        bold_match = re.search(r'\*\*(.+?)\*\*', cleaned)
-        if bold_match:
-            cleaned = bold_match.group(1)
-        else:
-            cleaned = cleaned.strip()
+    # Don't forget last variant
+    if current_variant and current_num > 0:
+        full_text = ' '.join(current_variant)
+        variants.append(full_text)
 
-        # Remove any remaining ** markers and quotes
-        cleaned = cleaned.replace('**', '')
+    # Clean up variants
+    cleaned_variants = []
+    for var in variants:
+        # Remove ** markers
+        cleaned = var.replace('**', '')
+        # Clean quotes
         cleaned = re.sub(r'^["\']|["\']$', '', cleaned.strip())
-
-        # Clean up Aegisub line break commands that might interfere
-        # Replace \N with space, preserve the text
+        # Replace \N with space
         cleaned = cleaned.replace('\\N', ' ').replace('\\n', ' ')
+        # Normalize spaces
         cleaned = re.sub(r'\s+', ' ', cleaned).strip()
 
         # Must contain Cyrillic and be substantial
-        if cleaned and len(cleaned) > 2:
-            if re.search(r'[а-яА-ЯёЁ]', cleaned):
-                # Skip if this is exactly the original text (AI just returned input)
-                cleaned_normalized = cleaned.strip().lower()
-                if original_normalized and cleaned_normalized == original_normalized:
-                    logger.warning(f"Skipping variant identical to original: {cleaned[:50]}")
+        if cleaned and len(cleaned) > 2 and re.search(r'[а-яА-ЯёЁ]', cleaned):
+            # Skip if too similar to original
+            cleaned_normalized = cleaned.strip().lower()
+            if original_normalized:
+                orig_alpha = re.sub(r'[^\w]', '', original_normalized)
+                clean_alpha = re.sub(r'[^\w]', '', cleaned_normalized)
+                if orig_alpha == clean_alpha:
+                    logger.warning(f"Skipping variant too similar to original: {cleaned[:50]}")
                     continue
-                # Also skip if it's too similar (only differs by punctuation)
-                if original_normalized:
-                    orig_alpha = re.sub(r'[^\w]', '', original_normalized)
-                    clean_alpha = re.sub(r'[^\w]', '', cleaned_normalized)
-                    if orig_alpha == clean_alpha:
-                        logger.warning(f"Skipping variant too similar to original: {cleaned[:50]}")
-                        continue
-                variants.append(cleaned)
+            cleaned_variants.append(cleaned)
+
+    variants = cleaned_variants
 
     # Try to extract Russian from response if no variants found
     if not variants:
