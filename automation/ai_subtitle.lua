@@ -76,8 +76,9 @@ local function load_settings()
         default_instructions = "",
         translation_style = "natural",
         num_variants = 3,
-        context_lines = 1,
-        use_source = false
+        context_lines = 2,
+        source_path = "",  -- Путь к английским субтитрам
+        match_length = true  -- Соблюдать длину оригинала
     }
     return session_settings
 end
@@ -102,49 +103,51 @@ local function show_project_settings()
     local settings = load_settings()
 
     local style_items = {"natural", "formal", "casual", "literal"}
-    local style_labels = {
-        natural = "Естественный (разговорный)",
-        formal = "Формальный (официальный)",
-        casual = "Неформальный (сленг)",
-        literal = "Буквальный (близко к оригиналу)"
-    }
 
     local dialog = {
-        {class="label", label="=== Настройки проекта ===", x=0, y=0, width=3},
+        {class="label", label="=== Настройки проекта ===", x=0, y=0, width=4},
 
-        {class="label", label="Глобальный контекст (описание фильма/сериала):", x=0, y=1, width=3},
-        {class="textbox", name="global_context", value=settings.global_context or "", x=0, y=2, width=3, height=3},
+        {class="label", label="Глобальный контекст (описание фильма/сериала):", x=0, y=1, width=4},
+        {class="textbox", name="global_context", value=settings.global_context or "", x=0, y=2, width=4, height=2},
 
-        {class="label", label="Инструкции по умолчанию (применяются ко всем переводам):", x=0, y=5, width=3},
-        {class="textbox", name="default_instructions", value=settings.default_instructions or "", x=0, y=6, width=3, height=2},
+        {class="label", label="Инструкции по умолчанию:", x=0, y=4, width=4},
+        {class="edit", name="default_instructions", value=settings.default_instructions or "", x=0, y=5, width=4},
 
-        {class="label", label="Стиль перевода:", x=0, y=8},
-        {class="dropdown", name="style", items=style_items, value=settings.translation_style or "natural", x=1, y=8, width=2},
+        {class="label", label="Путь к английским субтитрам (.srt/.txt):", x=0, y=6, width=4},
+        {class="edit", name="source_path", value=settings.source_path or "", x=0, y=7, width=4},
 
-        {class="label", label="Кол-во вариантов (1-5):", x=0, y=9},
-        {class="intedit", name="num_variants", value=settings.num_variants or 3, min=1, max=5, x=1, y=9},
+        {class="label", label="Стиль:", x=0, y=8},
+        {class="dropdown", name="style", items=style_items, value=settings.translation_style or "natural", x=1, y=8, width=1},
 
-        {class="label", label="Строк контекста (0-5):", x=0, y=10},
-        {class="intedit", name="context_lines", value=settings.context_lines or 1, min=0, max=5, x=1, y=10},
+        {class="label", label="Вариантов:", x=2, y=8},
+        {class="intedit", name="num_variants", value=settings.num_variants or 3, min=1, max=5, x=3, y=8},
 
-        {class="checkbox", name="use_source", label="Использовать английский исходник (.txt/.srt)", value=settings.use_source or false, x=0, y=11, width=3},
+        {class="label", label="Строк контекста:", x=0, y=9},
+        {class="intedit", name="context_lines", value=settings.context_lines or 2, min=0, max=5, x=1, y=9},
 
-        {class="label", label="", x=0, y=12},
-        {class="label", label="Примеры контекста:", x=0, y=13, width=3},
-        {class="label", label="  'Это комедия про студентов'", x=0, y=14, width=3},
-        {class="label", label="  'Научная фантастика, формальный язык'", x=0, y=15, width=3},
+        {class="checkbox", name="match_length", label="Соблюдать длину оригинала (±10%)", value=settings.match_length ~= false, x=2, y=9, width=2},
     }
 
-    local buttons = {"Сохранить", "Отмена"}
+    local buttons = {"Сохранить", "Выбрать файл EN", "Отмена"}
     local button, results = aegisub.dialog.display(dialog, buttons)
 
-    if button == "Сохранить" then
+    if button == "Выбрать файл EN" then
+        -- Показываем диалог выбора файла
+        local path = aegisub.dialog.open("Выберите английские субтитры", "", "", "Субтитры (*.srt;*.txt)|*.srt;*.txt", false, true)
+        if path then
+            settings.source_path = path
+            save_settings()
+            aegisub.log("Путь сохранён: " .. path .. "\n")
+        end
+        return show_project_settings()  -- Показываем настройки снова
+    elseif button == "Сохранить" then
         session_settings.global_context = results.global_context
         session_settings.default_instructions = results.default_instructions
         session_settings.translation_style = results.style
         session_settings.num_variants = results.num_variants
         session_settings.context_lines = results.context_lines
-        session_settings.use_source = results.use_source
+        session_settings.source_path = results.source_path
+        session_settings.match_length = results.match_length
         save_settings()
         aegisub.log("Настройки сохранены!\n")
     end
@@ -278,9 +281,24 @@ local function translate_line(subs, sel, active)
         save_settings()
     end
 
-    -- Загружаем source если нужно
+    -- Загружаем английские субтитры
     local source_blocks = nil
-    if settings.use_source then
+    local source_path = settings.source_path or ""
+
+    -- Сначала пробуем указанный путь
+    if source_path ~= "" then
+        local f = io.open(source_path, "r")
+        if f then
+            f:close()
+            source_blocks = parse_srt_file(source_path)
+            aegisub.log("Загружены EN субтитры: " .. source_path .. "\n")
+        else
+            aegisub.log("Не найден файл EN субтитров: " .. source_path .. "\n")
+        end
+    end
+
+    -- Если не указан путь, пробуем автопоиск
+    if not source_blocks then
         local sub_path = aegisub.decode_path("?script")
         local sub_name = aegisub.file_name()
         if sub_name then
@@ -289,13 +307,16 @@ local function translate_line(subs, sel, active)
             sub_name = "unknown"
         end
 
-        for _, ext in ipairs({".txt", ".srt", "_en.txt", "_en.srt"}) do
+        for _, ext in ipairs({"_en.srt", "_en.txt", ".en.srt", ".srt", ".txt"}) do
             local try_path = sub_path .. separator .. sub_name .. ext
             local f = io.open(try_path, "r")
             if f then
                 f:close()
                 source_blocks = parse_srt_file(try_path)
-                break
+                if source_blocks then
+                    aegisub.log("Автонайден EN файл: " .. try_path .. "\n")
+                    break
+                end
             end
         end
     end
@@ -337,12 +358,17 @@ local function translate_line(subs, sel, active)
         end
     end
 
+    -- Считаем длину оригинала (без \N)
+    local original_text = line.text:gsub("\\N", " "):gsub("%s+", " ")
+    local original_length = #original_text
+
     -- Формируем запрос
     local request_data = {
         current_line = {
             ru = line.text,
             en = source_blocks and source_blocks[current_d_idx] or "",
-            duration = (line.end_time - line.start_time) / 1000.0
+            duration = (line.end_time - line.start_time) / 1000.0,
+            max_chars = settings.match_length and original_length or 0  -- 0 = без ограничения
         },
         context_before = context_before,
         context_after = context_after,

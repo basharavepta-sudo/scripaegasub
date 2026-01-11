@@ -93,6 +93,7 @@ def generate_translation_prompt(data: Dict[str, Any], config: Dict[str, Any]) ->
     en_text = current_line.get('en', '') or ''
     ru_text = current_line.get('ru', '') or ''
     duration = current_line.get('duration', 0)
+    max_chars = current_line.get('max_chars', 0)  # Лимит символов от оригинала
 
     # Build prompt with localization focus
     lines = [LOCALIZATION_PROMPT.strip()]
@@ -104,21 +105,36 @@ def generate_translation_prompt(data: Dict[str, Any], config: Dict[str, Any]) ->
     # Style
     lines.append(f"Стиль: {style_desc}.")
 
-    # Duration constraint
-    if duration > 0:
-        max_chars = int(duration * 15)  # ~15 chars per second readable
-        lines.append(f"Длительность: {duration:.1f}с (максимум ~{max_chars} символов).")
+    # Character limit (from original subtitle length)
+    if max_chars and max_chars > 0:
+        lines.append(f"ВАЖНО: Длина перевода должна быть около {max_chars} символов (±10%)!")
+    elif duration > 0:
+        # Fallback to duration-based estimate
+        est_chars = int(duration * 15)
+        lines.append(f"Длительность: {duration:.1f}с (примерно {est_chars} символов).")
 
-    # Context lines (compact)
+    # Context lines (show more context for better understanding)
     if context_before:
-        ctx = context_before[-1]  # Only last line for speed
-        if ctx.get('ru'):
-            lines.append(f"Пред. строка: {ctx['ru']}")
+        lines.append("\n--- КОНТЕКСТ (предыдущие строки) ---")
+        for ctx in context_before[-2:]:  # Last 2 lines
+            if ctx.get('en'):
+                lines.append(f"EN: {ctx['en']}")
+            if ctx.get('ru'):
+                lines.append(f"RU: {ctx['ru']}")
 
-    # Current line
-    lines.append(f"\n[АНГЛИЙСКИЙ]: {en_text}")
+    # Current line to translate
+    lines.append("\n--- ТЕКУЩАЯ СТРОКА ---")
+    if en_text:
+        lines.append(f"[АНГЛИЙСКИЙ ОРИГИНАЛ]: {en_text}")
     if ru_text and ru_text != en_text:
-        lines.append(f"[ТЕКУЩИЙ РУССКИЙ]: {ru_text}")
+        lines.append(f"[ТЕКУЩИЙ ПЕРЕВОД]: {ru_text}")
+
+    # Following context
+    if context_after:
+        lines.append("\n--- КОНТЕКСТ (следующие строки) ---")
+        for ctx in context_after[:2]:  # Next 2 lines
+            if ctx.get('en'):
+                lines.append(f"EN: {ctx['en']}")
 
     # Instructions
     if default_instructions:
@@ -129,14 +145,15 @@ def generate_translation_prompt(data: Dict[str, Any], config: Dict[str, Any]) ->
 
     # Request variants with clear format
     lines.append(f"\nДай {num_variants} РАЗНЫХ вариант(а) перевода на русский.")
-    lines.append("ФОРМАТ ОТВЕТА (строго соблюдай):")
-    lines.append("1. Первый вариант перевода на русском")
-    lines.append("2. Второй вариант перевода на русском")
+    if max_chars and max_chars > 0:
+        lines.append(f"Каждый вариант должен быть около {max_chars} символов!")
+    lines.append("ФОРМАТ ОТВЕТА:")
+    lines.append("1. Первый вариант")
+    lines.append("2. Второй вариант")
     if num_variants >= 3:
-        lines.append("3. Третий вариант перевода на русском")
+        lines.append("3. Третий вариант")
     lines.append("")
-    lines.append("НЕ добавляй пояснений, комментариев или английского текста.")
-    lines.append("Каждый вариант должен быть УНИКАЛЬНЫМ и ОТЛИЧАТЬСЯ от исходного текста!")
+    lines.append("Только русский текст, без пояснений!")
 
     return "\n".join(lines)
 
