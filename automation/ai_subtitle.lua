@@ -192,6 +192,9 @@ end
 -- ============== Запуск Python ==============
 
 local function run_python_backend()
+    -- Удаляем старый файл ответа перед запуском
+    os.remove(response_file)
+
     local cmd
     if separator == "/" then
         -- Linux/Mac: просто запускаем
