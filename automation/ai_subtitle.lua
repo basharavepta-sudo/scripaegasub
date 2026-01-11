@@ -18,6 +18,7 @@ local json = require("json")
 local temp_dir = os.getenv("TEMP") or os.getenv("TMP") or "/tmp"
 local request_file = temp_dir .. separator .. "aegisub_ai_request.json"
 local response_file = temp_dir .. separator .. "aegisub_ai_response.json"
+local log_file = temp_dir .. separator .. "aegisub_ai_log.txt"
 local python_script = script_path .. "alma_backend.py"
 local config_file = script_path .. "config.json"
 local settings_file = script_path .. "user_settings.json"
@@ -45,11 +46,16 @@ end
 
 local python_executable = get_python_cmd()
 
-local function read_json_file(filepath)
+local function read_file(filepath)
     local file = io.open(filepath, "r")
     if not file then return nil end
     local content = file:read("*all")
     file:close()
+    return content
+end
+
+local function read_json_file(filepath)
+    local content = read_file(filepath)
     if not content or content == "" then return nil end
     local ok, data = pcall(json.decode, content)
     return ok and data or nil
@@ -192,37 +198,40 @@ end
 -- ============== Запуск Python ==============
 
 local function run_python_backend()
-    -- Удаляем старый файл ответа перед запуском
+    -- Удаляем старые файлы перед запуском
     os.remove(response_file)
+    os.remove(log_file)
 
     local cmd
     if separator == "/" then
-        -- Linux/Mac: просто запускаем
-        cmd = python_executable .. ' "' .. python_script .. '" "' .. request_file .. '" "' .. response_file .. '" "' .. config_file .. '" 2>&1'
+        -- Linux/Mac: редирект в log_file
+        cmd = string.format('%s "%s" "%s" "%s" "%s" > "%s" 2>&1',
+            python_executable, python_script, request_file, response_file, config_file, log_file)
     else
-        -- Windows: используем start /b /wait чтобы скрыть окно CMD
-        -- Альтернативно используем pythonw если доступен
-        cmd = 'start /b /wait "" ' .. python_executable .. ' "' .. python_script .. '" "' .. request_file .. '" "' .. response_file .. '" "' .. config_file .. '"'
+        -- Windows: start /b /wait с редиректом через cmd /c
+        -- Обратите внимание на кавычки для cmd /c
+        cmd = string.format('start /b /wait "" cmd /c ""%s" "%s" "%s" "%s" "%s" > "%s" 2>&1"',
+            python_executable, python_script, request_file, response_file, config_file, log_file)
     end
 
-    -- Используем io.popen вместо os.execute для скрытия окна
+    -- Запускаем
     local handle = io.popen(cmd .. " && echo __SUCCESS__ || echo __FAILED__", "r")
     if handle then
         local output = handle:read("*a")
         handle:close()
-        -- Проверяем успех по маркеру или наличию response файла
-        if output:find("__SUCCESS__") then
-            return true
+
+        -- Проверяем наличие файла ответа, даже если команда вернула успех
+        -- (на Windows start может вернуть 0 даже при ошибке Python)
+        local f = io.open(response_file, "r")
+        if f then
+            local content = f:read("*a")
+            f:close()
+            if content and content ~= "" then
+                return true
+            end
         end
     end
 
-    -- Fallback: проверяем наличие response файла
-    local f = io.open(response_file, "r")
-    if f then
-        local content = f:read("*a")
-        f:close()
-        return content and content ~= ""
-    end
     return false
 end
 
@@ -366,13 +375,17 @@ local function translate_line(subs, sel, active)
     local success = run_python_backend()
 
     if not success then
-        aegisub.dialog.display({{class="label", label="Ошибка Python! Проверьте Ollama."}}, {"OK"})
+        local log_content = read_file(log_file) or "Нет логов."
+        if #log_content > 800 then log_content = "..." .. log_content:sub(-800) end
+        aegisub.dialog.display({{class="label", label="Ошибка Python:\n" .. log_content}}, {"OK"})
         return
     end
 
     local response = read_json_file(response_file)
     if not response then
-        aegisub.dialog.display({{class="label", label="Нет ответа от AI."}}, {"OK"})
+        local log_content = read_file(log_file) or "Нет логов."
+        if #log_content > 800 then log_content = "..." .. log_content:sub(-800) end
+        aegisub.dialog.display({{class="label", label="AI вернул пустой ответ. Логи:\n" .. log_content}}, {"OK"})
         return
     end
 
@@ -491,13 +504,17 @@ local function translate_batch(subs, sel, active)
     local success = run_python_backend()
 
     if not success then
-        aegisub.dialog.display({{class="label", label="Ошибка batch перевода!"}}, {"OK"})
+        local log_content = read_file(log_file) or "Нет логов."
+        if #log_content > 800 then log_content = "..." .. log_content:sub(-800) end
+        aegisub.dialog.display({{class="label", label="Ошибка batch перевода:\n" .. log_content}}, {"OK"})
         return
     end
 
     local response = read_json_file(response_file)
     if not response or not response.batch_variants then
-        aegisub.dialog.display({{class="label", label="Нет результатов batch."}}, {"OK"})
+        local log_content = read_file(log_file) or "Нет логов."
+        if #log_content > 800 then log_content = "..." .. log_content:sub(-800) end
+        aegisub.dialog.display({{class="label", label="Нет результатов batch. Логи:\n" .. log_content}}, {"OK"})
         return
     end
 
