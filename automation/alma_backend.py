@@ -66,22 +66,37 @@ STYLE_PRESETS = {
 
 # Base prompt
 BASE_PROMPT = """Ты профессиональный редактор субтитров.
-ВАЖНО: Отвечай ТОЛЬКО на русском языке!
-НЕ возвращай исходный текст без изменений!
+КРИТИЧЕСКИ ВАЖНО:
+- Отвечай ТОЛЬКО на русском!
+- СОХРАНЯЙ СМЫСЛ на 100%! Не добавляй и не убирай информацию!
+- СОХРАНЯЙ КОЛИЧЕСТВО СЛОВ (±1-2 слова максимум)!
 """
 
 # Mode: EN->RU translation
 TRANSLATION_MODE = """ЗАДАЧА: Локализация с английского на русский.
-- Адаптируй сленг, идиомы под русские аналоги
-- Используй живой русский язык
-- Сохраняй эмоции и интонацию"""
+
+ИДИОМЫ И СЛЕНГ - адаптируй ПРАВИЛЬНО:
+- "piece of cake" → "раз плюнуть" (НЕ "кусок торта")
+- "break a leg" → "ни пуха ни пера" (НЕ "сломай ногу")
+- "holy shit" → "ё-моё/блин/чёрт" (по контексту)
+- "badass" → "крутой/отмороженный"
+- "dude/bro" → "чувак/братан"
+- "what the hell" → "какого чёрта"
+
+ПРАВИЛА:
+- Передай ТОЧНЫЙ смысл, не общий
+- Сохрани эмоции и интонацию
+- То же количество слов!"""
 
 # Mode: RU editing only (no English)
-EDITING_MODE = """ЗАДАЧА: Улучшить русский текст для читаемости.
-- Сделай фразу более естественной
+EDITING_MODE = """ЗАДАЧА: Улучшить русский текст.
+
+ПРАВИЛА:
+- СОХРАНИ 100% СМЫСЛА! Ничего не добавляй/убирай!
+- Сохрани количество слов (±1-2)!
+- Сделай фразу естественнее
 - Исправь неуклюжие обороты
-- Улучши логику и читаемость
-- Сохрани смысл"""
+- НЕ меняй факты, имена, числа!"""
 
 
 def generate_translation_prompt(data: Dict[str, Any], config: Dict[str, Any]) -> str:
@@ -106,6 +121,10 @@ def generate_translation_prompt(data: Dict[str, Any], config: Dict[str, Any]) ->
     # Determine mode: translation (EN->RU) or editing (RU only)
     has_english = bool(en_text and en_text.strip())
 
+    # Count words in source text
+    source_text = ru_text if ru_text else en_text
+    word_count = len(source_text.replace('\\N', ' ').split()) if source_text else 0
+
     # Build prompt
     lines = [BASE_PROMPT.strip()]
 
@@ -122,9 +141,9 @@ def generate_translation_prompt(data: Dict[str, Any], config: Dict[str, Any]) ->
     if global_context:
         lines.append(f"О проекте: {global_context}")
 
-    # Character limit
-    if max_chars and max_chars > 0:
-        lines.append(f"Длина: ~{max_chars} символов!")
+    # Word and character limits
+    if word_count > 0:
+        lines.append(f"ЛИМИТ: {word_count} слов, ~{max_chars} символов!")
 
     # Context (before/after subtitles)
     if context_before or context_after:
