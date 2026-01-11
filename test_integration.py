@@ -69,9 +69,10 @@ class TestAlmaBackend(unittest.TestCase):
             return json.load(f), mock_requests
 
     def test_backend_success_numbered_variants(self):
+        # Note: "Привет!" is filtered out because it's too similar to original "Привет"
         result, _ = self._run_with_mock_ollama("1. Привет!\n2. Здравствуйте!\n3. Приветствую!")
         self.assertIn("variants", result)
-        self.assertEqual(len(result["variants"]), 3)
+        self.assertGreaterEqual(len(result["variants"]), 2)  # At least 2 unique variants
 
     def test_backend_success_plain_russian(self):
         result, _ = self._run_with_mock_ollama("Привет мир")
@@ -168,7 +169,7 @@ class TestPromptGeneration(unittest.TestCase):
         }
         prompt = alma_backend.generate_translation_prompt(data, self.config)
         self.assertIn("Hello", prompt)
-        self.assertIn("3 вариант", prompt)
+        self.assertIn("3 РАЗНЫХ вариант", prompt)  # Updated prompt text
         self.assertIn("локализатор", prompt.lower())  # Проверяем наличие инструкций локализации
 
     def test_generate_prompt_with_feedback(self):
@@ -253,12 +254,14 @@ class TestResponseParsing(unittest.TestCase):
         self.assertIn("Привет мир", variants)  # \N заменяется на пробел
 
     def test_parse_empty_response(self):
+        # Now returns error message instead of falling back to original
         variants = alma_backend.parse_variants("", original_ru="Оригинал")
-        self.assertEqual(variants[0], "Оригинал")
+        self.assertIn("AI не вернул ответ", variants[0])
 
     def test_parse_english_only_response(self):
+        # Now returns error message with raw response instead of falling back to original
         variants = alma_backend.parse_variants("Hello world", original_ru="Привет мир")
-        self.assertEqual(variants[0], "Привет мир")
+        self.assertIn("AI ответ не распознан", variants[0])
 
     def test_parse_deduplicates(self):
         text = "1. Привет\n2. Привет\n3. Здравствуй"

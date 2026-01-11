@@ -66,11 +66,13 @@ STYLE_PRESETS = {
 
 # Base localization instructions (always included)
 LOCALIZATION_PROMPT = """Ты профессиональный локализатор субтитров с английского на русский.
-Важно: это НЕ просто перевод, а ЛОКАЛИЗАЦИЯ для русскоязычной аудитории.
+ВАЖНО: Отвечай ТОЛЬКО на русском языке!
+Это НЕ просто перевод, а ЛОКАЛИЗАЦИЯ для русскоязычной аудитории.
 - Английский сленг, идиомы, культурные отсылки адаптируй под понятные русским аналоги
 - Используй живой русский язык, не кальки с английского
 - Сохраняй эмоциональный окрас и интонацию оригинала
 - Учитывай длительность субтитра (текст должен успеть прочитаться)
+- НИКОГДА не возвращай исходный текст без изменений!
 """
 
 
@@ -126,12 +128,15 @@ def generate_translation_prompt(data: Dict[str, Any], config: Dict[str, Any]) ->
         lines.append(f"Доп. требования: {feedback}")
 
     # Request variants with clear format
-    lines.append(f"\nДай {num_variants} вариант(а) локализации.")
-    lines.append("Формат ответа - ТОЛЬКО варианты, каждый с новой строки:")
-    lines.append("1. **вариант перевода**")
-    lines.append("2. **вариант перевода**")
+    lines.append(f"\nДай {num_variants} РАЗНЫХ вариант(а) перевода на русский.")
+    lines.append("ФОРМАТ ОТВЕТА (строго соблюдай):")
+    lines.append("1. Первый вариант перевода на русском")
+    lines.append("2. Второй вариант перевода на русском")
     if num_variants >= 3:
-        lines.append("3. **вариант перевода**")
+        lines.append("3. Третий вариант перевода на русском")
+    lines.append("")
+    lines.append("НЕ добавляй пояснений, комментариев или английского текста.")
+    lines.append("Каждый вариант должен быть УНИКАЛЬНЫМ и ОТЛИЧАТЬСЯ от исходного текста!")
 
     return "\n".join(lines)
 
@@ -246,13 +251,25 @@ def parse_variants(response_text: str, num_variants: int = 3, original_ru: str =
     variants = []
     lines = response_text.strip().split('\n')
 
+    logger.debug(f"Parsing response: {response_text[:500]}...")
+
+    # Normalize original for comparison (strip and lowercase)
+    original_normalized = original_ru.strip().lower() if original_ru else ""
+
     for line in lines:
         line = line.strip()
         if not line:
             continue
 
-        # Remove numbering (1., 1), 1:, 1.1., etc.)
-        cleaned = re.sub(r'^[\d]+[\.\)\:]\s*', '', line)
+        # Skip lines that look like instructions, labels or English text
+        skip_patterns = ['формат', 'вариант перевода', 'ответ:', 'перевод:', 'here are', 'translation:', 'option']
+        if any(skip in line.lower() for skip in skip_patterns):
+            if not re.search(r'^\d+[\.\)\:]', line):  # Unless it's numbered
+                continue
+
+        # Remove various numbering formats (1., 1), 1:, 1.1., -,  •, etc.)
+        cleaned = re.sub(r'^[\d]+[\.\)\:\-]\s*', '', line)
+        cleaned = re.sub(r'^[-•]\s*', '', cleaned)
 
         # Extract text from **bold** markers if present
         bold_match = re.search(r'\*\*(.+?)\*\*', cleaned)
@@ -261,8 +278,9 @@ def parse_variants(response_text: str, num_variants: int = 3, original_ru: str =
         else:
             cleaned = cleaned.strip()
 
-        # Remove any remaining ** markers
+        # Remove any remaining ** markers and quotes
         cleaned = cleaned.replace('**', '')
+        cleaned = re.sub(r'^["\']|["\']$', '', cleaned.strip())
 
         # Clean up Aegisub line break commands that might interfere
         # Replace \N with space, preserve the text
@@ -272,6 +290,18 @@ def parse_variants(response_text: str, num_variants: int = 3, original_ru: str =
         # Must contain Cyrillic and be substantial
         if cleaned and len(cleaned) > 2:
             if re.search(r'[а-яА-ЯёЁ]', cleaned):
+                # Skip if this is exactly the original text (AI just returned input)
+                cleaned_normalized = cleaned.strip().lower()
+                if original_normalized and cleaned_normalized == original_normalized:
+                    logger.warning(f"Skipping variant identical to original: {cleaned[:50]}")
+                    continue
+                # Also skip if it's too similar (only differs by punctuation)
+                if original_normalized:
+                    orig_alpha = re.sub(r'[^\w]', '', original_normalized)
+                    clean_alpha = re.sub(r'[^\w]', '', cleaned_normalized)
+                    if orig_alpha == clean_alpha:
+                        logger.warning(f"Skipping variant too similar to original: {cleaned[:50]}")
+                        continue
                 variants.append(cleaned)
 
     # Try to extract Russian from response if no variants found
@@ -282,22 +312,31 @@ def parse_variants(response_text: str, num_variants: int = 3, original_ru: str =
             if re.search(r'[а-яА-ЯёЁ]', match):
                 cleaned = match.replace('\\N', ' ').replace('\\n', ' ')
                 cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+                # Skip if identical to original
+                if original_ru and cleaned.strip() == original_ru.strip():
+                    continue
                 variants.append(cleaned)
 
         if not variants:
-            russian_match = re.search(r'[а-яА-ЯёЁ][а-яА-ЯёЁ\s\.\,\!\?\-\'\"]*[а-яА-ЯёЁ]', response_text)
+            # Try to find any Russian text in response
+            russian_match = re.search(r'[а-яА-ЯёЁ][а-яА-ЯёЁ\s\.\,\!\?\-\'\"]+[а-яА-ЯёЁ]', response_text)
             if russian_match:
-                variants.append(russian_match.group().strip())
+                found = russian_match.group().strip()
+                # Skip if identical to original
+                if not (original_ru and found.strip() == original_ru.strip()):
+                    variants.append(found)
 
-    # Fallback
+    # IMPORTANT: Do NOT fallback to original_ru - that defeats the purpose!
+    # If we couldn't parse any variants, return an error message
     if not variants:
-        if original_ru:
-            variants = [original_ru]
-        elif response_text.strip():
+        logger.error(f"Failed to parse any variants from response: {response_text[:200]}")
+        if response_text.strip():
+            # Return the raw response so user can see what AI returned
             cleaned = response_text.strip().replace('\\N', ' ').replace('\\n', ' ')
-            variants = [re.sub(r'\s+', ' ', cleaned).strip()]
+            cleaned = re.sub(r'\s+', ' ', cleaned).strip()[:200]
+            variants = [f"[AI ответ не распознан]: {cleaned}"]
         else:
-            variants = ["[Не удалось получить перевод]"]
+            variants = ["[AI не вернул ответ - проверьте Ollama]"]
 
     # Deduplicate and limit
     seen = set()
@@ -309,6 +348,7 @@ def parse_variants(response_text: str, num_variants: int = 3, original_ru: str =
             if len(unique) >= num_variants:
                 break
 
+    logger.info(f"Parsed variants: {unique}")
     return unique
 
 
@@ -408,6 +448,7 @@ def main():
                 response_text = generate_with_transformers(prompt, config)
 
             logger.info(f"Response: {len(response_text)} chars")
+            logger.info(f"Raw AI response:\n{response_text[:500]}")
 
             variants = parse_variants(response_text, num_variants, original_ru)
             logger.info(f"Parsed {len(variants)} variants")
