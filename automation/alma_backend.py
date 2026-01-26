@@ -127,6 +127,8 @@ def generate_translation_prompt(data: Dict[str, Any], config: Dict[str, Any]) ->
 
     # Request variants with clear format
     lines.append(f"\nДай {num_variants} вариант(а) локализации.")
+    lines.append("ВАЖНО: Сохраняй теги форматирования (например \\N) если они нужны.")
+    lines.append("Используй \\N для переноса строки внутри субтитра. НЕ разбивай один вариант на несколько строк в ответе.")
     lines.append("Формат ответа - ТОЛЬКО варианты, каждый с новой строки:")
     lines.append("1. **вариант перевода**")
     lines.append("2. **вариант перевода**")
@@ -241,75 +243,125 @@ def generate_with_transformers(prompt: str, config: Dict[str, Any], model_cache:
     return response
 
 
+def clean_response_text(text: str) -> str:
+    """Clean up response text, removing markdown formatting."""
+    text = text.strip()
+    if text.startswith("```"):
+        lines = text.splitlines()
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    return text
+
+
 def parse_variants(response_text: str, num_variants: int = 3, original_ru: str = "") -> List[str]:
     """Parse translation variants from response."""
+    text = clean_response_text(response_text)
+    if not text:
+        return ["[Пустой ответ от AI]"]
+
     variants = []
-    lines = response_text.strip().split('\n')
+
+    # 1. Try to find JSON array using regex
+    # Support both [ ... ] and simple list structure
+    json_match = re.search(r'\[.*\]', text, re.DOTALL)
+    if json_match:
+        try:
+            potential_json = json_match.group(0)
+            parsed = json.loads(potential_json)
+            if isinstance(parsed, list) and all(isinstance(x, str) for x in parsed):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+
+    # 2. Try straight JSON load
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            variants = parsed
+        elif isinstance(parsed, dict):
+            for key in ["variants", "translations", "options", "results"]:
+                if key in parsed and isinstance(parsed[key], list):
+                    variants = parsed[key]
+                    break
+            else:
+                variants = [str(parsed)]
+        else:
+            variants = [str(parsed)]
+        variants = [str(v) for v in variants if v is not None]
+        if variants:
+            return variants
+    except json.JSONDecodeError:
+        pass
+
+    # 3. Fallback: Parse numbered list
+    lines = text.splitlines()
+    current_variant = []
 
     for line in lines:
         line = line.strip()
-        if not line:
-            continue
+        if not line: continue
 
-        # Remove numbering (1., 1), 1:, 1.1., etc.)
-        cleaned = re.sub(r'^[\d]+[\.\)\:]\s*', '', line)
+        # Check start of new variant (1. or 1) or -)
+        match = re.match(r'^[\d\-]+[\.\)\:]\s*(.+)$', line)
+        if match:
+            if current_variant:
+                variants.append(" ".join(current_variant))
+                current_variant = []
 
-        # Extract text from **bold** markers if present
-        bold_match = re.search(r'\*\*(.+?)\*\*', cleaned)
-        if bold_match:
-            cleaned = bold_match.group(1)
+            content = match.group(1).strip()
+            # Clean up **bold** if present
+            bold_match = re.search(r'\*\*(.+?)\*\*', content)
+            if bold_match:
+                content = bold_match.group(1)
+            content = content.replace('**', '')
+
+            current_variant.append(content)
         else:
-            cleaned = cleaned.strip()
+            # Continuation?
+            if current_variant:
+                # heuristic: if line looks like "Hope this helps" or "Note:", ignore
+                if re.match(r'^(Hope|Note|Here|Please|Regards|Best)', line, re.IGNORECASE):
+                    continue
+                current_variant.append(line)
+            else:
+                # Loose line, check if cyrillic
+                if re.search(r'[а-яА-ЯёЁ]', line):
+                    # Clean up **bold** if present
+                    bold_match = re.search(r'\*\*(.+?)\*\*', line)
+                    if bold_match:
+                        line = bold_match.group(1)
+                    line = line.replace('**', '')
+                    variants.append(line)
 
-        # Remove any remaining ** markers
-        cleaned = cleaned.replace('**', '')
-
-        # Clean up Aegisub line break commands that might interfere
-        # Replace \N with space, preserve the text
-        cleaned = cleaned.replace('\\N', ' ').replace('\\n', ' ')
-        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-
-        # Must contain Cyrillic and be substantial
-        if cleaned and len(cleaned) > 2:
-            if re.search(r'[а-яА-ЯёЁ]', cleaned):
-                variants.append(cleaned)
-
-    # Try to extract Russian from response if no variants found
-    if not variants:
-        # Also handle **bold** in full text
-        bold_matches = re.findall(r'\*\*([^*]+)\*\*', response_text)
-        for match in bold_matches:
-            if re.search(r'[а-яА-ЯёЁ]', match):
-                cleaned = match.replace('\\N', ' ').replace('\\n', ' ')
-                cleaned = re.sub(r'\s+', ' ', cleaned).strip()
-                variants.append(cleaned)
-
-        if not variants:
-            russian_match = re.search(r'[а-яА-ЯёЁ][а-яА-ЯёЁ\s\.\,\!\?\-\'\"]*[а-яА-ЯёЁ]', response_text)
-            if russian_match:
-                variants.append(russian_match.group().strip())
-
-    # Fallback
-    if not variants:
-        if original_ru:
-            variants = [original_ru]
-        elif response_text.strip():
-            cleaned = response_text.strip().replace('\\N', ' ').replace('\\n', ' ')
-            variants = [re.sub(r'\s+', ' ', cleaned).strip()]
-        else:
-            variants = ["[Не удалось получить перевод]"]
+    if current_variant:
+        variants.append(" ".join(current_variant))
 
     # Deduplicate and limit
     seen = set()
     unique = []
     for v in variants:
-        if v not in seen:
+        # Final cleanup of double spaces but preserve \N
+        # If the multiline join added spaces, we should respect that, but condense others.
+        # But wait, we want to allow \N.
+        v = re.sub(r'\s+', ' ', v).strip()
+
+        if v and v not in seen:
             seen.add(v)
             unique.append(v)
             if len(unique) >= num_variants:
                 break
 
-    return unique
+    if unique:
+        return unique
+
+    # Fallback if nothing parsed
+    if original_ru:
+        return [original_ru]
+
+    return [text.strip()]
 
 
 def parse_batch_variants(response_text: str, num_lines: int, num_variants: int = 3) -> List[List[str]]:
