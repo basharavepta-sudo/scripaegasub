@@ -43,17 +43,23 @@ def load_config(config_path: str) -> Dict[str, Any]:
     return config
 
 
-def generate_prompt(data: Dict[str, Any]) -> str:
+def generate_prompt(data: Dict[str, Any], num_variants: int = 3) -> str:
     """Generates the prompt for Gemini."""
     current_line = data.get("current_line", {})
     context_before = data.get("context_before", [])
     context_after = data.get("context_after", [])
     feedback = data.get("feedback", "")
 
+    # Helper to sanitize inputs (hide \N from AI)
+    def sanitize(text):
+        if not text: return ""
+        return str(text).replace("\\N", " [br] ")
+
     prompt_parts = [
         "You are an expert subtitle editor and translator.",
         "Your task is to improve the translation or styling of a subtitle line.",
         "The subtitles are being translated from English to Russian.",
+        "IMPORTANT: The token ' [br] ' represents a line break. Use ' [br] ' instead of \\N or newlines.",
         ""
     ]
 
@@ -61,16 +67,16 @@ def generate_prompt(data: Dict[str, Any]) -> str:
     if context_before:
         prompt_parts.append("Context (lines before):")
         for item in context_before:
-            ru_text = item.get('ru', '') or '[empty]'
-            en_text = item.get('en', '') or '[no source]'
+            ru_text = sanitize(item.get('ru', '') or '[empty]')
+            en_text = sanitize(item.get('en', '') or '[no source]')
             prompt_parts.append(f"- RU: {ru_text}")
             prompt_parts.append(f"  EN: {en_text}")
         prompt_parts.append("")
 
     # Current line
     prompt_parts.append("=== CURRENT LINE TO EDIT ===")
-    ru_text = current_line.get('ru', '') or '[empty]'
-    en_text = current_line.get('en', '') or '[no source]'
+    ru_text = sanitize(current_line.get('ru', '') or '[empty]')
+    en_text = sanitize(current_line.get('en', '') or '[no source]')
     duration = current_line.get('duration', 0)
 
     prompt_parts.append(f"Russian (current): {ru_text}")
@@ -83,8 +89,8 @@ def generate_prompt(data: Dict[str, Any]) -> str:
     if context_after:
         prompt_parts.append("Context (lines after):")
         for item in context_after:
-            ru_text = item.get('ru', '') or '[empty]'
-            en_text = item.get('en', '') or '[no source]'
+            ru_text = sanitize(item.get('ru', '') or '[empty]')
+            en_text = sanitize(item.get('en', '') or '[no source]')
             prompt_parts.append(f"- RU: {ru_text}")
             prompt_parts.append(f"  EN: {en_text}")
         prompt_parts.append("")
@@ -96,18 +102,21 @@ def generate_prompt(data: Dict[str, Any]) -> str:
 
     # Instructions
     prompt_parts.extend([
-        "Please provide exactly 3 different variants of the Russian translation/edit.",
+        f"Please provide exactly {num_variants} different variants of the Russian translation/edit.",
         "Consider:",
         "- The duration constraint (text should fit the timing)",
         "- Natural Russian language flow",
         "- Context from surrounding lines",
         "- Accuracy to the English source (if provided)",
         "",
-        "Return ONLY a raw JSON array of 3 strings, like this:",
-        '["Вариант 1", "Вариант 2", "Вариант 3"]',
+        f"Return ONLY a raw JSON array of {num_variants} strings, like this:",
+        f'["Вариант 1", ... (total {num_variants} items) ...]',
         "",
-        "Do NOT include any markdown formatting, explanations, or code blocks.",
-        "Just the raw JSON array."
+        "IMPORTANT RULES:",
+        "1. DO NOT use backslashes or \\N. ALWAYS use ' [br] ' for line breaks.",
+        "2. Try to preserve the approximate position of line breaks ([br]) to match the original rhythm.",
+        "3. Return ONLY the JSON array. No markdown, no explanations.",
+        "4. Example with line break: 'First line [br] Second line'"
     ])
 
     return "\n".join(prompt_parts)
@@ -138,6 +147,12 @@ def parse_variants(response_text: str) -> List[str]:
     if not text:
         return ["[Пустой ответ от AI]"]
 
+    # Pre-process text to fix common JSON escaping issues with \N
+    # Many models output \N directly instead of \\N inside JSON strings
+    # We replace \N with \\N, but only if it's not already escaped
+    import re
+    text = re.sub(r'(?<!\\)\\N', r'\\\\N', text)
+
     try:
         parsed = json.loads(text)
 
@@ -158,6 +173,17 @@ def parse_variants(response_text: str) -> List[str]:
 
         # Ensure all variants are strings
         variants = [str(v) for v in variants if v is not None]
+
+        # RESTORE [br] TO \N
+        # We asked the AI to use [br], now we put \N back
+        restored_variants = []
+        for v in variants:
+            # Replace [br] (case insensitive) with \N
+            # Handle [br], [BR], [Br], etc.
+            v_restored = re.sub(r'\s*\[br\]\s*', r'\\N', v, flags=re.IGNORECASE)
+            restored_variants.append(v_restored)
+
+        variants = restored_variants
 
         # Ensure we have at least one variant
         if not variants:
@@ -229,7 +255,8 @@ def main():
             request_data = json.load(f)
 
         # Generate prompt
-        prompt = generate_prompt(request_data)
+        num_variants = min(max(config.get("num_variants", 3), 1), 5)
+        prompt = generate_prompt(request_data, num_variants)
         logger.debug(f"Generated prompt:\n{prompt}")
 
         # Determine temperature

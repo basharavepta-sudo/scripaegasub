@@ -34,14 +34,6 @@ transformers = None
 torch = None
 TRANSFORMERS_ERROR = None
 
-try:
-    import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-    transformers = True
-except ImportError as e:
-    TRANSFORMERS_ERROR = str(e)
-
-
 def load_config(config_path: str) -> Dict[str, Any]:
     """Loads configuration from json file."""
     if not os.path.exists(config_path):
@@ -88,8 +80,13 @@ def generate_translation_prompt(data: Dict[str, Any], config: Dict[str, Any]) ->
     style = config.get("translation_style", "natural")
     style_desc = STYLE_PRESETS.get(style, STYLE_PRESETS["natural"])
 
-    en_text = current_line.get('en', '') or ''
-    ru_text = current_line.get('ru', '') or ''
+    # Sanitize inputs
+    def sanitize(text):
+        if not text: return ""
+        return str(text).replace("\\N", " [br] ")
+
+    en_text = sanitize(current_line.get('en', '') or '')
+    ru_text = sanitize(current_line.get('ru', '') or '')
     duration = current_line.get('duration', 0)
 
     # Build prompt with localization focus
@@ -111,7 +108,8 @@ def generate_translation_prompt(data: Dict[str, Any], config: Dict[str, Any]) ->
     if context_before:
         ctx = context_before[-1]  # Only last line for speed
         if ctx.get('ru'):
-            lines.append(f"Пред. строка: {ctx['ru']}")
+            ctx_ru = sanitize(ctx['ru'])
+            lines.append(f"Пред. строка: {ctx_ru}")
 
     # Current line
     lines.append(f"\n[АНГЛИЙСКИЙ]: {en_text}")
@@ -119,8 +117,12 @@ def generate_translation_prompt(data: Dict[str, Any], config: Dict[str, Any]) ->
         lines.append(f"[ТЕКУЩИЙ РУССКИЙ]: {ru_text}")
 
     # Instructions
+    lines.append("\nВАЖНО:")
+    lines.append("1. Используй токен ' [br] ' для переноса строки вместо \\N.")
+    lines.append("2. Старайся сохранять места переносов (ритм) как в оригинале, если это уместно.")
+
     if default_instructions:
-        lines.append(f"\nУказания: {default_instructions}")
+        lines.append(f"Указания: {default_instructions}")
 
     if feedback:
         lines.append(f"Доп. требования: {feedback}")
@@ -129,7 +131,7 @@ def generate_translation_prompt(data: Dict[str, Any], config: Dict[str, Any]) ->
     lines.append(f"\nДай {num_variants} вариант(а) локализации.")
     lines.append("Формат ответа - ТОЛЬКО варианты, каждый с новой строки:")
     lines.append("1. **вариант перевода**")
-    lines.append("2. **вариант перевода**")
+    lines.append("2. **вариант с [br] переносом**")
     if num_variants >= 3:
         lines.append("3. **вариант перевода**")
 
@@ -178,7 +180,7 @@ def generate_with_ollama(prompt: str, config: Dict[str, Any]) -> str:
         "stream": False,
         "options": {
             "temperature": temperature,
-            "num_predict": 300,  # Reduced for speed
+            "num_predict": 500,  # Increased to prevent truncation
             "top_p": 0.9,
             "repeat_penalty": 1.1
         }
@@ -201,8 +203,12 @@ def generate_with_ollama(prompt: str, config: Dict[str, Any]) -> str:
 
 def generate_with_transformers(prompt: str, config: Dict[str, Any], model_cache: Dict = {}) -> str:
     """Generate response using local transformers model."""
-    if not transformers:
-        raise ImportError(f"transformers/torch not installed. Error: {TRANSFORMERS_ERROR}")
+    # Lazy import to avoid startup lag for Ollama users
+    try:
+        import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+    except ImportError as e:
+        raise ImportError(f"transformers/torch not installed. Install them to use local models. Error: {e}")
 
     model_name = config.get("model", "haoranxu/ALMA-13B-R")
     temperature = config.get("temperature", 0.7)
@@ -227,7 +233,7 @@ def generate_with_transformers(prompt: str, config: Dict[str, Any], model_cache:
     with torch.no_grad():
         outputs = model.generate(
             **inputs,
-            max_new_tokens=150,
+            max_new_tokens=250,  # Increased to prevent truncation
             temperature=temperature,
             do_sample=True,
             top_p=0.9,
@@ -244,13 +250,35 @@ def generate_with_transformers(prompt: str, config: Dict[str, Any], model_cache:
 def parse_variants(response_text: str, num_variants: int = 3, original_ru: str = "") -> List[str]:
     """Parse translation variants from response."""
     variants = []
-    lines = response_text.strip().split('\n')
+    raw_lines = response_text.strip().split('\n')
+    merged_lines = []
 
-    for line in lines:
+    # Merge lines that are split by \N
+    current_line = ""
+    for line in raw_lines:
         line = line.strip()
         if not line:
             continue
 
+        # Check if we should merge with previous line
+        # Heuristic: if previous line ends with \N, it's a hard line break within the subtitle,
+        # so the next line of text belongs to the same subtitle variant.
+        should_merge = False
+        if current_line:
+            if current_line.endswith(r'\N') or current_line.endswith(r'\N"') or current_line.endswith(r"\N'"):
+                should_merge = True
+
+        if should_merge:
+            current_line += line
+        else:
+            if current_line:
+                merged_lines.append(current_line)
+            current_line = line
+
+    if current_line:
+        merged_lines.append(current_line)
+
+    for line in merged_lines:
         # Remove numbering (1., 1), 1:, 1.1., etc.)
         cleaned = re.sub(r'^[\d]+[\.\)\:]\s*', '', line)
 
@@ -264,10 +292,11 @@ def parse_variants(response_text: str, num_variants: int = 3, original_ru: str =
         # Remove any remaining ** markers
         cleaned = cleaned.replace('**', '')
 
-        # Clean up Aegisub line break commands that might interfere
-        # Replace \N with space, preserve the text
-        cleaned = cleaned.replace('\\N', ' ').replace('\\n', ' ')
+        # Clean whitespace
         cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+
+        # Restore [br] -> \N
+        cleaned = re.sub(r'\s*\[br\]\s*', r'\\N', cleaned, flags=re.IGNORECASE)
 
         # Must contain Cyrillic and be substantial
         if cleaned and len(cleaned) > 2:
@@ -280,22 +309,28 @@ def parse_variants(response_text: str, num_variants: int = 3, original_ru: str =
         bold_matches = re.findall(r'\*\*([^*]+)\*\*', response_text)
         for match in bold_matches:
             if re.search(r'[а-яА-ЯёЁ]', match):
-                cleaned = match.replace('\\N', ' ').replace('\\n', ' ')
-                cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+                cleaned = re.sub(r'\s+', ' ', match).strip()
+                cleaned = re.sub(r'\s*\[br\]\s*', r'\\N', cleaned, flags=re.IGNORECASE)
                 variants.append(cleaned)
 
         if not variants:
-            russian_match = re.search(r'[а-яА-ЯёЁ][а-яА-ЯёЁ\s\.\,\!\?\-\'\"]*[а-яА-ЯёЁ]', response_text)
+            # More complex regex to catch Russian text that might include [br]
+            # \w matches letters, numbers, underscore. [\[\]] matches brackets.
+            russian_match = re.search(r'[а-яА-ЯёЁ][а-яА-ЯёЁ\s\.\,\!\?\-\'\"\[\]brBR]*[а-яА-ЯёЁ]', response_text)
             if russian_match:
-                variants.append(russian_match.group().strip())
+                cleaned = russian_match.group().strip()
+                cleaned = re.sub(r'\s*\[br\]\s*', r'\\N', cleaned, flags=re.IGNORECASE)
+                variants.append(cleaned)
 
     # Fallback
     if not variants:
         if original_ru:
             variants = [original_ru]
         elif response_text.strip():
-            cleaned = response_text.strip().replace('\\N', ' ').replace('\\n', ' ')
-            variants = [re.sub(r'\s+', ' ', cleaned).strip()]
+            cleaned = response_text.strip()
+            cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+            cleaned = re.sub(r'\s*\[br\]\s*', r'\\N', cleaned, flags=re.IGNORECASE)
+            variants = [cleaned]
         else:
             variants = ["[Не удалось получить перевод]"]
 
